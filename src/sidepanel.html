@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GetDocumented</title>
+    <link rel="stylesheet" href="./sidepanel.css" />
+  </head>
+  <body>
+    <header>
+      <h1>GetDocumented</h1>
+      <p>Click through any page to build your visual documentation flow.</p>
+    </header>
+
+    <section class="controls">
+      <button id="exportPdf" class="primary">Export to PDF</button>
+      <button id="clearSession">Clear</button>
+    </section>
+
+    <section id="steps" class="steps"></section>
+    <template id="stepTemplate">
+      <article class="step">
+        <h2></h2>
+        <p class="meta"></p>
+        <p class="selector"></p>
+        <img alt="Captured click screenshot" />
+      </article>
+    </template>
+
+    <script type="module" src="./sidepanel.js"></script>
+  </body>
+</html>

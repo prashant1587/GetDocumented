@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "GetDocumented Click Capture",
+  "description": "Capture click-by-click screenshots and export a documented walkthrough to PDF.",
+  "version": "0.1.0",
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "storage",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open GetDocumented sidebar"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "src/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
