@@ -1,8 +1,13 @@
+const API_BASE_URL = 'http://localhost:8080';
+const SAVE_ENDPOINT = '/api/document-steps/bulk';
+
 const port = chrome.runtime.connect({ name: 'sidepanel' });
 const stepsContainer = document.getElementById('steps');
 const stepTemplate = document.getElementById('stepTemplate');
 const exportButton = document.getElementById('exportPdf');
+const saveButton = document.getElementById('saveSession');
 const clearButton = document.getElementById('clearSession');
+const saveStatus = document.getElementById('saveStatus');
 
 let currentTabId;
 let session = [];
@@ -26,11 +31,31 @@ port.onMessage.addListener((message) => {
   if (message.tabId !== currentTabId) return;
   session = message.payload;
   renderSession();
+  clearStatus();
 });
 
 clearButton.addEventListener('click', () => {
   if (!currentTabId) return;
   port.postMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
+});
+
+saveButton.addEventListener('click', async () => {
+  if (!session.length) {
+    showStatus('Capture at least one step before saving.', 'error');
+    return;
+  }
+
+  saveButton.disabled = true;
+  showStatus('Saving session...', null);
+
+  try {
+    await saveSession(session);
+    showStatus('Saved successfully.', 'success');
+  } catch (error) {
+    showStatus(`Unable to save: ${error.message}`, 'error');
+  } finally {
+    saveButton.disabled = false;
+  }
 });
 
 exportButton.addEventListener('click', async () => {
@@ -64,6 +89,49 @@ function renderSession() {
 
     stepsContainer.appendChild(fragment);
   }
+}
+
+async function saveSession(steps) {
+  const payload = {
+    source: 'chrome-extension',
+    tabId: currentTabId,
+    steps: steps.map((step) => ({
+      stepNumber: step.stepNumber,
+      title: step.title,
+      description: step.direction,
+      selector: step.selector,
+      pageUrl: step.pageUrl,
+      screenshot: step.screenshot,
+      clickPosition: step.clickPosition,
+      viewport: step.viewport,
+      createdAt: step.createdAt
+    }))
+  };
+
+  const response = await fetch(`${API_BASE_URL}${SAVE_ENDPOINT}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Request failed with status ${response.status}`);
+  }
+}
+
+function showStatus(message, type) {
+  saveStatus.textContent = message;
+  saveStatus.classList.remove('success', 'error');
+  if (type) {
+    saveStatus.classList.add(type);
+  }
+}
+
+function clearStatus() {
+  showStatus('', null);
 }
 
 function buildPrintableReport(steps) {

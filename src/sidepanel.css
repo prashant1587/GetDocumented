@@ -27,6 +27,7 @@ header p {
 .controls {
   display: flex;
   gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 button {
@@ -47,6 +48,21 @@ button.primary {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+.status {
+  margin: -0.25rem 0 0;
+  min-height: 1rem;
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+.status.success {
+  color: #86efac;
+}
+
+.status.error {
+  color: #fca5a5;
 }
 
 .step {
