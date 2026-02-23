@@ -39,6 +39,6 @@ Chrome extension to build visual documentation by clicking through a page.
 
 The Save button sends a `POST` request to:
 
-- `http://localhost:8080/api/document-steps/bulk`
+- `http://localhost:3000/api/documents`
 
 Adjust `API_BASE_URL` and `SAVE_ENDPOINT` in `src/sidepanel.js` if your GetDocumented_Backend service uses a different route or port.
