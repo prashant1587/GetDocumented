@@ -1,5 +1,5 @@
-const API_BASE_URL = 'http://localhost:8080';
-const SAVE_ENDPOINT = '/api/document-steps/bulk';
+const API_BASE_URL = 'http://localhost:3000';
+const SAVE_ENDPOINT = '/api/documents';
 
 const port = chrome.runtime.connect({ name: 'sidepanel' });
 const stepsContainer = document.getElementById('steps');
@@ -57,8 +57,8 @@ saveButton.addEventListener('click', async () => {
   showStatus('Saving session...', null);
 
   try {
-    await saveSession(session);
-    showStatus('Saved successfully.', 'success');
+    const savedDocument = await saveSession(session);
+    showStatus(`Saved successfully (${savedDocument.id}).`, 'success');
   } catch (error) {
     showStatus(`Unable to save: ${error.message}`, 'error');
   } finally {
@@ -100,19 +100,16 @@ function renderSession() {
 }
 
 async function saveSession(steps) {
+  const documentTitle = buildDocumentTitle(steps);
   const payload = {
-    source: 'chrome-extension',
-    tabId: currentTabId,
-    steps: steps.map((step) => ({
-      stepNumber: step.stepNumber,
+    title: documentTitle,
+    items: steps.map((step, index) => ({
       title: step.title,
       description: step.direction,
-      selector: step.selector,
-      pageUrl: step.pageUrl,
       screenshot: step.screenshot,
-      clickPosition: step.clickPosition,
-      viewport: step.viewport,
-      createdAt: step.createdAt
+      mimeType: parseMimeType(step.screenshot),
+      fileName: buildFileName(step, index),
+      position: index + 1
     }))
   };
 
@@ -128,6 +125,44 @@ async function saveSession(steps) {
     const errorText = await response.text();
     throw new Error(errorText || `Request failed with status ${response.status}`);
   }
+
+  const responseData = await response.json();
+
+  if (!responseData?.id) {
+    throw new Error('Backend did not return a valid document response.');
+  }
+
+  return responseData;
+}
+
+function buildDocumentTitle(steps) {
+  let host = 'captured-flow';
+
+  if (steps[0]?.pageUrl) {
+    try {
+      host = new URL(steps[0].pageUrl).hostname || host;
+    } catch {
+      host = 'captured-flow';
+    }
+  }
+
+  return `${host} walkthrough (${new Date().toISOString()})`;
+}
+
+function parseMimeType(screenshot) {
+  const mimeTypeMatch = screenshot.match(/^data:(.+?);base64,/);
+  return mimeTypeMatch?.[1] ?? 'image/png';
+}
+
+function buildFileName(step, index) {
+  const sanitizedTitle = step.title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+
+  const safeTitle = sanitizedTitle || `step-${index + 1}`;
+  return `${String(index + 1).padStart(2, '0')}-${safeTitle}.png`;
 }
 
 function showStatus(message, type) {
