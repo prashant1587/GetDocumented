@@ -4,6 +4,7 @@ const SAVE_ENDPOINT = '/api/document-steps/bulk';
 const port = chrome.runtime.connect({ name: 'sidepanel' });
 const stepsContainer = document.getElementById('steps');
 const stepTemplate = document.getElementById('stepTemplate');
+const startNewCaptureButton = document.getElementById('startNewCapture');
 const exportButton = document.getElementById('exportPdf');
 const saveButton = document.getElementById('saveSession');
 const clearButton = document.getElementById('clearSession');
@@ -37,6 +38,13 @@ port.onMessage.addListener((message) => {
 clearButton.addEventListener('click', () => {
   if (!currentTabId) return;
   port.postMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
+});
+
+startNewCaptureButton.addEventListener('click', () => {
+  if (!currentTabId) return;
+
+  port.postMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
+  showStatus('Started a new capture. Your next click will create step 1.', 'success');
 });
 
 saveButton.addEventListener('click', async () => {
