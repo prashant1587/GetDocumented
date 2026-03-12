@@ -1,10 +1,11 @@
 const API_BASE_URL = 'http://localhost:3000';
 const SAVE_ENDPOINT = '/api/documents';
+const EXPORT_ENDPOINT = '/api/documents/export/pdf';
 
 const port = chrome.runtime.connect({ name: 'sidepanel' });
 const stepsContainer = document.getElementById('steps');
 const stepTemplate = document.getElementById('stepTemplate');
-const startNewCaptureButton = document.getElementById('startNewCapture');
+const restartCaptureButton = document.getElementById('restartCapture');
 const exportButton = document.getElementById('exportPdf');
 const saveButton = document.getElementById('saveSession');
 const clearButton = document.getElementById('clearSession');
@@ -40,11 +41,11 @@ clearButton.addEventListener('click', () => {
   port.postMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
 });
 
-startNewCaptureButton.addEventListener('click', () => {
+restartCaptureButton.addEventListener('click', () => {
   if (!currentTabId) return;
 
   port.postMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
-  showStatus('Started a new capture. Your next click will create step 1.', 'success');
+  showStatus('Capture restarted. Your next click will become step 1.', 'success');
 });
 
 saveButton.addEventListener('click', async () => {
@@ -67,13 +68,23 @@ saveButton.addEventListener('click', async () => {
 });
 
 exportButton.addEventListener('click', async () => {
-  if (!session.length) return;
+  if (!session.length) {
+    showStatus('Capture at least one step before exporting.', 'error');
+    return;
+  }
 
-  const reportHtml = buildPrintableReport(session);
-  const reportBlob = new Blob([reportHtml], { type: 'text/html' });
-  const reportUrl = URL.createObjectURL(reportBlob);
+  exportButton.disabled = true;
+  showStatus('Exporting PDF...', null);
 
-  await chrome.tabs.create({ url: reportUrl });
+  try {
+    const pdfBlob = await exportSession(session);
+    downloadBlob(pdfBlob, `${buildDocumentSlug(session)}.pdf`);
+    showStatus('Export finished.', 'success');
+  } catch (error) {
+    showStatus(`Unable to export: ${error.message}`, 'error');
+  } finally {
+    exportButton.disabled = false;
+  }
 });
 
 function renderSession() {
@@ -100,25 +111,12 @@ function renderSession() {
 }
 
 async function saveSession(steps) {
-  const documentTitle = buildDocumentTitle(steps);
-  const payload = {
-    title: documentTitle,
-    items: steps.map((step, index) => ({
-      title: step.title,
-      description: step.direction,
-      screenshot: step.screenshot,
-      mimeType: parseMimeType(step.screenshot),
-      fileName: buildFileName(step, index),
-      position: index + 1
-    }))
-  };
-
   const response = await fetch(`${API_BASE_URL}${SAVE_ENDPOINT}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(buildDocumentPayload(steps))
   });
 
   if (!response.ok) {
@@ -135,6 +133,37 @@ async function saveSession(steps) {
   return responseData;
 }
 
+async function exportSession(steps) {
+  const response = await fetch(`${API_BASE_URL}${EXPORT_ENDPOINT}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(buildDocumentPayload(steps))
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Request failed with status ${response.status}`);
+  }
+
+  return response.blob();
+}
+
+function buildDocumentPayload(steps) {
+  return {
+    title: buildDocumentTitle(steps),
+    items: steps.map((step, index) => ({
+      title: step.title,
+      description: step.direction,
+      screenshot: step.screenshot,
+      mimeType: parseMimeType(step.screenshot),
+      fileName: buildFileName(step, index),
+      position: index + 1
+    }))
+  };
+}
+
 function buildDocumentTitle(steps) {
   let host = 'captured-flow';
 
@@ -147,6 +176,14 @@ function buildDocumentTitle(steps) {
   }
 
   return `${host} walkthrough (${new Date().toISOString()})`;
+}
+
+function buildDocumentSlug(steps) {
+  return buildDocumentTitle(steps)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'getdocumented-walkthrough';
 }
 
 function parseMimeType(screenshot) {
@@ -177,56 +214,14 @@ function clearStatus() {
   showStatus('', null);
 }
 
-function buildPrintableReport(steps) {
-  const cards = steps
-    .map(
-      (step) => `
-      <section class="card">
-        <h2>Step ${step.stepNumber}: ${escapeHtml(step.title)}</h2>
-        <p><strong>Direction:</strong> ${escapeHtml(step.direction)}</p>
-        <p><strong>Selector:</strong> <code>${escapeHtml(step.selector)}</code></p>
-        <img src="${step.screenshot}" alt="Step ${step.stepNumber} screenshot" />
-      </section>
-    `
-    )
-    .join('');
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.click();
 
-  return `
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>GetDocumented Walkthrough</title>
-    <style>
-      body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
-      h1 { margin-bottom: 0.2rem; }
-      p.subtitle { color: #444; margin-top: 0; }
-      .card { border: 1px solid #ccc; border-radius: 12px; padding: 14px; margin-bottom: 16px; break-inside: avoid; }
-      img { width: 100%; border: 1px solid #ddd; border-radius: 8px; }
-      code { background: #f3f4f6; padding: 2px 4px; border-radius: 4px; }
-      @media print {
-        .print-tip { display: none; }
-        .card { page-break-inside: avoid; }
-      }
-    </style>
-  </head>
-  <body>
-    <h1>GetDocumented Walkthrough</h1>
-    <p class="subtitle">${steps.length} captured click steps</p>
-    <p class="print-tip">Use your browser print dialog and choose <strong>Save as PDF</strong>.</p>
-    ${cards}
-    <script>
-      setTimeout(() => window.print(), 500);
-    </script>
-  </body>
-</html>`;
-}
-
-function escapeHtml(value) {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 1000);
 }
