@@ -1,6 +1,7 @@
 const API_BASE_URL = 'http://localhost:3000';
 const SAVE_ENDPOINT = '/api/documents';
 const EXPORT_ENDPOINT = '/api/documents/export/pdf';
+const PRESIGNED_UPLOAD_ENDPOINT = '/api/documents/uploads/presigned-url';
 
 const port = chrome.runtime.connect({ name: 'sidepanel' });
 const stepsContainer = document.getElementById('steps');
@@ -111,17 +112,17 @@ function renderSession() {
 }
 
 async function saveSession(steps) {
+  const uploadReadyPayload = await buildSaveDocumentPayload(steps);
   const response = await fetch(`${API_BASE_URL}${SAVE_ENDPOINT}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(buildDocumentPayload(steps))
+    body: JSON.stringify(uploadReadyPayload)
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || `Request failed with status ${response.status}`);
+    throw new Error(await parseApiError(response));
   }
 
   const responseData = await response.json();
@@ -143,11 +144,24 @@ async function exportSession(steps) {
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || `Request failed with status ${response.status}`);
+    throw new Error(await parseApiError(response));
   }
 
   return response.blob();
+}
+
+async function buildSaveDocumentPayload(steps) {
+  const items = [];
+
+  for (const [index, step] of steps.entries()) {
+    showStatus(`Uploading screenshot ${index + 1} of ${steps.length}...`, null);
+    items.push(await uploadStepScreenshot(step, index));
+  }
+
+  return {
+    title: buildDocumentTitle(steps),
+    items
+  };
 }
 
 function buildDocumentPayload(steps) {
@@ -162,6 +176,55 @@ function buildDocumentPayload(steps) {
       position: index + 1
     }))
   };
+}
+
+async function uploadStepScreenshot(step, index) {
+  const mimeType = parseMimeType(step.screenshot);
+  const fileName = buildFileName(step, index);
+  const uploadDescriptor = await createPresignedUpload({ mimeType, fileName });
+
+  const uploadResponse = await fetch(uploadDescriptor.uploadUrl, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': mimeType
+    },
+    body: dataUrlToBlob(step.screenshot)
+  });
+
+  if (!uploadResponse.ok) {
+    throw new Error(`Screenshot upload failed with status ${uploadResponse.status}.`);
+  }
+
+  return {
+    title: step.title,
+    description: step.direction,
+    screenshotUrl: uploadDescriptor.fileUrl,
+    mimeType,
+    fileName,
+    position: index + 1
+  };
+}
+
+async function createPresignedUpload({ mimeType, fileName }) {
+  const response = await fetch(`${API_BASE_URL}${PRESIGNED_UPLOAD_ENDPOINT}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ mimeType, fileName })
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response));
+  }
+
+  const responseData = await response.json();
+
+  if (!responseData?.uploadUrl || !responseData?.fileUrl) {
+    throw new Error('Backend did not return a valid upload URL response.');
+  }
+
+  return responseData;
 }
 
 function buildDocumentTitle(steps) {
@@ -200,6 +263,39 @@ function buildFileName(step, index) {
 
   const safeTitle = sanitizedTitle || `step-${index + 1}`;
   return `${String(index + 1).padStart(2, '0')}-${safeTitle}.png`;
+}
+
+function dataUrlToBlob(dataUrl) {
+  const [metadata, base64Data] = dataUrl.split(',');
+
+  if (!metadata || !base64Data) {
+    throw new Error('Screenshot payload is not a valid data URL.');
+  }
+
+  const mimeType = metadata.match(/^data:(.+);base64$/)?.[1] || 'image/png';
+  const binary = atob(base64Data);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return new Blob([bytes], { type: mimeType });
+}
+
+async function parseApiError(response) {
+  const responseText = await response.text();
+
+  if (!responseText) {
+    return `Request failed with status ${response.status}`;
+  }
+
+  try {
+    const parsed = JSON.parse(responseText);
+    return parsed?.message || responseText;
+  } catch {
+    return responseText;
+  }
 }
 
 function showStatus(message, type) {
