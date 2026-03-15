@@ -1,7 +1,12 @@
 const API_BASE_URL = 'http://localhost:3000';
+const LOGIN_ENDPOINT = '/api/auth/login';
+const ME_ENDPOINT = '/api/auth/me';
+const DEPARTMENTS_ENDPOINT = '/api/departments';
 const SAVE_ENDPOINT = '/api/documents';
 const EXPORT_ENDPOINT = '/api/documents/export/pdf';
 const PRESIGNED_UPLOAD_ENDPOINT = '/api/documents/uploads/presigned-url';
+const AUTH_TOKEN_KEY = 'authToken';
+const AUTH_USER_KEY = 'authUser';
 
 const port = chrome.runtime.connect({ name: 'sidepanel' });
 const stepsContainer = document.getElementById('steps');
@@ -11,11 +16,55 @@ const exportButton = document.getElementById('exportPdf');
 const saveButton = document.getElementById('saveSession');
 const clearButton = document.getElementById('clearSession');
 const saveStatus = document.getElementById('saveStatus');
+const authLoggedOut = document.getElementById('authLoggedOut');
+const authLoggedIn = document.getElementById('authLoggedIn');
+const authUserEmail = document.getElementById('authUserEmail');
+const authStatus = document.getElementById('authStatus');
+const loginForm = document.getElementById('loginForm');
+const loginEmailInput = document.getElementById('loginEmail');
+const loginPasswordInput = document.getElementById('loginPassword');
+const loginButton = document.getElementById('loginButton');
+const logoutButton = document.getElementById('logoutButton');
+const departmentPicker = document.getElementById('departmentPicker');
+const saveDepartmentSelect = document.getElementById('saveDepartment');
 
 let currentTabId;
 let session = [];
+let authToken = null;
+let authUser = null;
+let availableDepartments = [];
 
 init();
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') {
+    return;
+  }
+
+  if (!changes[AUTH_TOKEN_KEY] && !changes[AUTH_USER_KEY]) {
+    return;
+  }
+
+  authToken = changes[AUTH_TOKEN_KEY]?.newValue ?? authToken;
+  authUser = changes[AUTH_USER_KEY]?.newValue ?? authUser;
+
+  if (typeof changes[AUTH_TOKEN_KEY]?.newValue === 'undefined') {
+    authToken = null;
+  }
+
+  if (typeof changes[AUTH_USER_KEY]?.newValue === 'undefined') {
+    authUser = null;
+  }
+
+  updateAuthUi();
+
+  if (isAuthenticated()) {
+    void loadDepartments();
+  } else {
+    availableDepartments = [];
+    updateDepartmentUi();
+  }
+});
 
 async function init() {
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -26,6 +75,7 @@ async function init() {
     return;
   }
 
+  await restoreAuthSession();
   port.postMessage({ type: 'REQUEST_SESSION', tabId: currentTabId });
 }
 
@@ -37,12 +87,70 @@ port.onMessage.addListener((message) => {
   clearStatus();
 });
 
+loginForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+
+  const email = loginEmailInput.value.trim();
+  const password = loginPasswordInput.value;
+
+  if (!email || !password) {
+    showAuthStatus('Email and password are required.', 'error');
+    return;
+  }
+
+  loginButton.disabled = true;
+  showAuthStatus('Logging in...', null);
+
+  try {
+    const response = await fetch(`${API_BASE_URL}${LOGIN_ENDPOINT}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ email, password })
+    });
+
+    if (!response.ok) {
+      throw new Error(await parseApiError(response));
+    }
+
+    const responseData = await response.json();
+
+    if (!responseData?.token || !responseData?.user) {
+      throw new Error('Backend did not return a valid login response.');
+    }
+
+    authToken = responseData.token;
+    authUser = responseData.user;
+    await persistAuthSession();
+    await loadDepartments();
+    loginForm.reset();
+    updateAuthUi();
+    showAuthStatus('Logged in. Capture is now enabled.', 'success');
+  } catch (error) {
+    await clearAuthSession();
+    showAuthStatus(`Unable to log in: ${error.message}`, 'error');
+  } finally {
+    loginButton.disabled = false;
+  }
+});
+
+logoutButton.addEventListener('click', async () => {
+  await clearAuthSession();
+  showAuthStatus('Logged out. Capture is disabled until you sign in again.', 'success');
+});
+
 clearButton.addEventListener('click', () => {
   if (!currentTabId) return;
   port.postMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
 });
 
 restartCaptureButton.addEventListener('click', () => {
+  if (!isAuthenticated()) {
+    showStatus('Log in to enable capture.', 'error');
+    return;
+  }
+
   if (!currentTabId) return;
 
   port.postMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
@@ -50,6 +158,11 @@ restartCaptureButton.addEventListener('click', () => {
 });
 
 saveButton.addEventListener('click', async () => {
+  if (!isAuthenticated()) {
+    showStatus('Log in to save captured steps.', 'error');
+    return;
+  }
+
   if (!session.length) {
     showStatus('Capture at least one step before saving.', 'error');
     return;
@@ -62,13 +175,23 @@ saveButton.addEventListener('click', async () => {
     const savedDocument = await saveSession(session);
     showStatus(`Saved successfully (${savedDocument.id}).`, 'success');
   } catch (error) {
+    if (error.status === 401) {
+      await clearAuthSession();
+      showAuthStatus('Session expired. Log in again to continue.', 'error');
+    }
+
     showStatus(`Unable to save: ${error.message}`, 'error');
   } finally {
-    saveButton.disabled = false;
+    updateControlState();
   }
 });
 
 exportButton.addEventListener('click', async () => {
+  if (!isAuthenticated()) {
+    showStatus('Log in to export captured steps.', 'error');
+    return;
+  }
+
   if (!session.length) {
     showStatus('Capture at least one step before exporting.', 'error');
     return;
@@ -82,9 +205,14 @@ exportButton.addEventListener('click', async () => {
     downloadBlob(pdfBlob, `${buildDocumentSlug(session)}.pdf`);
     showStatus('Export finished.', 'success');
   } catch (error) {
+    if (error.status === 401) {
+      await clearAuthSession();
+      showAuthStatus('Session expired. Log in again to continue.', 'error');
+    }
+
     showStatus(`Unable to export: ${error.message}`, 'error');
   } finally {
-    exportButton.disabled = false;
+    updateControlState();
   }
 });
 
@@ -92,8 +220,9 @@ function renderSession() {
   stepsContainer.innerHTML = '';
 
   if (!session.length) {
-    stepsContainer.innerHTML =
-      '<div class="empty">No clicks captured yet. Start clicking in the page to create documentation steps.</div>';
+    stepsContainer.innerHTML = isAuthenticated()
+      ? '<div class="empty">No clicks captured yet. Start clicking in the page to create documentation steps.</div>'
+      : '<div class="empty">Log in to enable capture and build documentation steps.</div>';
     return;
   }
 
@@ -111,43 +240,85 @@ function renderSession() {
   }
 }
 
+async function restoreAuthSession() {
+  const stored = await chrome.storage.local.get([AUTH_TOKEN_KEY, AUTH_USER_KEY]);
+  authToken = stored[AUTH_TOKEN_KEY] || null;
+  authUser = stored[AUTH_USER_KEY] || null;
+
+  if (!authToken) {
+    updateAuthUi();
+    return;
+  }
+
+  try {
+    const responseData = await apiFetchJson(ME_ENDPOINT);
+    authUser = responseData.user;
+    await persistAuthSession();
+    await loadDepartments();
+    showAuthStatus(`Signed in as ${authUser.email}.`, 'success');
+  } catch (error) {
+    await clearAuthSession();
+    showAuthStatus(`Log in to enable capture. ${error.message}`, 'error');
+  }
+}
+
+async function persistAuthSession() {
+  await chrome.storage.local.set({
+    [AUTH_TOKEN_KEY]: authToken,
+    [AUTH_USER_KEY]: authUser
+  });
+  updateAuthUi();
+}
+
+async function clearAuthSession() {
+  authToken = null;
+  authUser = null;
+  availableDepartments = [];
+  await chrome.storage.local.remove([AUTH_TOKEN_KEY, AUTH_USER_KEY]);
+  updateAuthUi();
+}
+
+function updateAuthUi() {
+  const authenticated = isAuthenticated();
+  authLoggedOut.hidden = authenticated;
+  authLoggedIn.hidden = !authenticated;
+  authUserEmail.textContent = authenticated ? authUser?.email || 'Unknown user' : '';
+  updateDepartmentUi();
+  updateControlState();
+  renderSession();
+}
+
+function updateControlState() {
+  const authenticated = isAuthenticated();
+  restartCaptureButton.disabled = !authenticated;
+  clearButton.disabled = !authenticated;
+  saveButton.disabled = !authenticated;
+  exportButton.disabled = !authenticated;
+}
+
+function isAuthenticated() {
+  return Boolean(authToken && authUser);
+}
+
 async function saveSession(steps) {
   const uploadReadyPayload = await buildSaveDocumentPayload(steps);
-  const response = await fetch(`${API_BASE_URL}${SAVE_ENDPOINT}`, {
+  return apiFetchJson(SAVE_ENDPOINT, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(uploadReadyPayload)
   });
-
-  if (!response.ok) {
-    throw new Error(await parseApiError(response));
-  }
-
-  const responseData = await response.json();
-
-  if (!responseData?.id) {
-    throw new Error('Backend did not return a valid document response.');
-  }
-
-  return responseData;
 }
 
 async function exportSession(steps) {
-  const response = await fetch(`${API_BASE_URL}${EXPORT_ENDPOINT}`, {
+  return apiFetchBlob(EXPORT_ENDPOINT, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(buildDocumentPayload(steps))
   });
-
-  if (!response.ok) {
-    throw new Error(await parseApiError(response));
-  }
-
-  return response.blob();
 }
 
 async function buildSaveDocumentPayload(steps) {
@@ -160,8 +331,26 @@ async function buildSaveDocumentPayload(steps) {
 
   return {
     title: buildDocumentTitle(steps),
+    departmentId: getSelectedDepartmentId(),
     items
   };
+}
+
+async function loadDepartments() {
+  if (!isAuthenticated()) {
+    availableDepartments = [];
+    updateDepartmentUi();
+    return;
+  }
+
+  try {
+    const responseData = await apiFetchJson(DEPARTMENTS_ENDPOINT);
+    availableDepartments = Array.isArray(responseData?.departments) ? responseData.departments : [];
+  } catch {
+    availableDepartments = [];
+  }
+
+  updateDepartmentUi();
 }
 
 function buildDocumentPayload(steps) {
@@ -206,7 +395,7 @@ async function uploadStepScreenshot(step, index) {
 }
 
 async function createPresignedUpload({ mimeType, fileName }) {
-  const response = await fetch(`${API_BASE_URL}${PRESIGNED_UPLOAD_ENDPOINT}`, {
+  const responseData = await apiFetchJson(PRESIGNED_UPLOAD_ENDPOINT, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -214,17 +403,81 @@ async function createPresignedUpload({ mimeType, fileName }) {
     body: JSON.stringify({ mimeType, fileName })
   });
 
-  if (!response.ok) {
-    throw new Error(await parseApiError(response));
-  }
-
-  const responseData = await response.json();
-
   if (!responseData?.uploadUrl || !responseData?.fileUrl) {
     throw new Error('Backend did not return a valid upload URL response.');
   }
 
   return responseData;
+}
+
+async function apiFetchJson(path, init = {}) {
+  const response = await fetch(`${API_BASE_URL}${path}`, withAuthHeaders(init));
+
+  if (!response.ok) {
+    const error = new Error(await parseApiError(response));
+    error.status = response.status;
+    throw error;
+  }
+
+  return response.json();
+}
+
+async function apiFetchBlob(path, init = {}) {
+  const response = await fetch(`${API_BASE_URL}${path}`, withAuthHeaders(init));
+
+  if (!response.ok) {
+    const error = new Error(await parseApiError(response));
+    error.status = response.status;
+    throw error;
+  }
+
+  return response.blob();
+}
+
+function withAuthHeaders(init) {
+  const headers = new Headers(init.headers || {});
+
+  if (authToken) {
+    headers.set('Authorization', `Bearer ${authToken}`);
+  }
+
+  return {
+    ...init,
+    headers
+  };
+}
+
+function updateDepartmentUi() {
+  const canChooseDepartment = isAuthenticated() && !authUser?.departmentId;
+  departmentPicker.hidden = !canChooseDepartment;
+
+  if (!canChooseDepartment) {
+    saveDepartmentSelect.innerHTML = '';
+    return;
+  }
+
+  const options = availableDepartments.length
+    ? availableDepartments
+    : [{ id: '', name: 'Common', isCommon: true }];
+
+  saveDepartmentSelect.innerHTML = options
+    .map(
+      (department) =>
+        `<option value="${department.id || ''}">${escapeHtml(department.name || 'Common')}${department.isCommon ? ' (Common)' : ''}</option>`
+    )
+    .join('');
+}
+
+function getSelectedDepartmentId() {
+  if (!isAuthenticated()) {
+    return null;
+  }
+
+  if (authUser?.departmentId) {
+    return authUser.departmentId;
+  }
+
+  return saveDepartmentSelect.value || null;
 }
 
 function buildDocumentTitle(steps) {
@@ -306,6 +559,14 @@ function showStatus(message, type) {
   }
 }
 
+function showAuthStatus(message, type) {
+  authStatus.textContent = message;
+  authStatus.classList.remove('success', 'error');
+  if (type) {
+    authStatus.classList.add(type);
+  }
+}
+
 function clearStatus() {
   showStatus('', null);
 }
@@ -320,4 +581,13 @@ function downloadBlob(blob, fileName) {
   setTimeout(() => {
     URL.revokeObjectURL(url);
   }, 1000);
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }

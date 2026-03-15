@@ -1,4 +1,8 @@
 const CLICK_THROTTLE_MS = 250;
+const AUTH_TOKEN_KEY = 'getdocumented.auth.token';
+const AUTH_USER_KEY = 'getdocumented.auth.user';
+const AUTH_SYNC_EVENT = 'getdocumented-extension-auth-sync';
+const WEB_APP_ORIGINS = new Set(['http://localhost:8080', 'http://127.0.0.1:8080']);
 let lastClickAt = 0;
 
 window.addEventListener(
@@ -35,6 +39,17 @@ window.addEventListener(
   },
   true
 );
+
+if (isWebAppPage()) {
+  installAuthBridge();
+  requestAuthSessionSnapshot();
+}
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === 'REQUEST_AUTH_SYNC' && isWebAppPage()) {
+    requestAuthSessionSnapshot();
+  }
+});
 
 function buildElementTitle(element) {
   const ariaLabel = element.getAttribute('aria-label');
@@ -90,4 +105,58 @@ function getDirection(x, y) {
   }
 
   return `${vertical}-${horizontal}`;
+}
+
+function isWebAppPage() {
+  return WEB_APP_ORIGINS.has(window.location.origin);
+}
+
+function installAuthBridge() {
+  window.addEventListener(AUTH_SYNC_EVENT, (event) => {
+    const payload = event.detail;
+    chrome.runtime.sendMessage({
+      type: 'AUTH_SESSION_SYNC',
+      payload
+    });
+  });
+}
+
+function requestAuthSessionSnapshot() {
+  injectPageScript(() => {
+    const emitSession = () => {
+      let user = null;
+      const rawUser = window.localStorage.getItem('getdocumented.auth.user');
+
+      if (rawUser) {
+        try {
+          user = JSON.parse(rawUser);
+        } catch {
+          user = null;
+        }
+      }
+
+      window.dispatchEvent(
+        new CustomEvent('getdocumented-extension-auth-sync', {
+          detail: {
+            token: window.localStorage.getItem('getdocumented.auth.token'),
+            user
+          }
+        })
+      );
+    };
+
+    emitSession();
+    window.addEventListener('storage', (storageEvent) => {
+      if (storageEvent.key === 'getdocumented.auth.token' || storageEvent.key === 'getdocumented.auth.user') {
+        emitSession();
+      }
+    });
+  });
+}
+
+function injectPageScript(callback) {
+  const script = document.createElement('script');
+  script.textContent = `(${callback.toString()})();`;
+  document.documentElement.appendChild(script);
+  script.remove();
 }

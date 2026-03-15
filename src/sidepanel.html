@@ -12,11 +12,50 @@
       <p>Click through any page to build your visual documentation flow.</p>
     </header>
 
+    <section id="authPanel" class="auth-panel">
+      <div id="authLoggedOut">
+        <h2>Extension Login</h2>
+        <p class="auth-copy">Log in to enable capture and save documents to the shared workspace.</p>
+        <form id="loginForm" class="auth-form">
+          <input id="loginEmail" type="email" placeholder="Email" autocomplete="username" />
+          <input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password" />
+          <button id="loginButton" type="submit" class="primary">Log in</button>
+        </form>
+      </div>
+      <div id="authLoggedIn" hidden>
+        <p class="auth-copy">Authenticated as <strong id="authUserEmail"></strong></p>
+        <button id="logoutButton" type="button">Log out</button>
+      </div>
+      <p id="authStatus" class="status" aria-live="polite"></p>
+    </section>
+
+    <section class="settings-panel">
+      <details>
+        <summary>Extension Settings</summary>
+        <div class="settings-body">
+          <label for="apiBaseUrl">Backend API Base URL</label>
+          <input id="apiBaseUrl" type="url" placeholder="http://localhost:3000" />
+          <div class="settings-actions">
+            <button id="saveSettings" type="button">Save Settings</button>
+            <button id="resetSettings" type="button">Reset</button>
+          </div>
+          <p id="settingsStatus" class="status" aria-live="polite"></p>
+        </div>
+      </details>
+    </section>
+
     <section class="controls">
       <button id="restartCapture" class="primary">Restart Capture</button>
       <button id="exportPdf" class="primary">Export</button>
       <button id="saveSession">Save</button>
       <button id="clearSession">Clear</button>
+    </section>
+
+    <section id="departmentPicker" class="department-picker" hidden>
+      <label for="saveDepartment">
+        Save To Department
+      </label>
+      <select id="saveDepartment"></select>
     </section>
 
     <p id="saveStatus" class="status" aria-live="polite"></p>

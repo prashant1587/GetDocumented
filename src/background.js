@@ -1,10 +1,14 @@
 const sessionsByTab = new Map();
 const panelPorts = new Map();
+const AUTH_TOKEN_KEY = 'authToken';
+const AUTH_USER_KEY = 'authUser';
 
 const ACTIONS = {
   REQUEST_SESSION: 'REQUEST_SESSION',
   CLICK_CAPTURED: 'CLICK_CAPTURED',
-  SESSION_UPDATED: 'SESSION_UPDATED'
+  SESSION_UPDATED: 'SESSION_UPDATED',
+  REQUEST_AUTH_SYNC: 'REQUEST_AUTH_SYNC',
+  AUTH_SESSION_SYNC: 'AUTH_SESSION_SYNC'
 };
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -27,6 +31,7 @@ chrome.runtime.onConnect.addListener((port) => {
       if (typeof tabId !== 'number') return;
       panelPorts.set(tabId, port);
       sendSessionUpdate(tabId);
+      await requestAuthSync(tabId);
       return;
     }
 
@@ -46,6 +51,13 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === ACTIONS.AUTH_SESSION_SYNC) {
+    syncAuthSession(message.payload)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type !== ACTIONS.CLICK_CAPTURED || !sender.tab?.id) {
     return false;
   }
@@ -64,6 +76,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 async function handleClickCapture(tab, payload) {
   const tabId = tab.id;
   if (!tabId) return;
+
+  const stored = await chrome.storage.local.get(AUTH_TOKEN_KEY);
+
+  if (!stored[AUTH_TOKEN_KEY]) {
+    throw new Error('Authentication required. Log in from the extension side panel to enable capture.');
+  }
 
   const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {
     format: 'png'
@@ -118,4 +136,24 @@ async function sendSessionUpdate(tabId) {
 
 function storageKey(tabId) {
   return `session:${tabId}`;
+}
+
+async function requestAuthSync(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: ACTIONS.REQUEST_AUTH_SYNC });
+  } catch {
+    // The active tab may not have a content script context we can message.
+  }
+}
+
+async function syncAuthSession(payload) {
+  if (!payload?.token || !payload?.user) {
+    await chrome.storage.local.remove([AUTH_TOKEN_KEY, AUTH_USER_KEY]);
+    return;
+  }
+
+  await chrome.storage.local.set({
+    [AUTH_TOKEN_KEY]: payload.token,
+    [AUTH_USER_KEY]: payload.user
+  });
 }

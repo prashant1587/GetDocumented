@@ -30,6 +30,94 @@ header p {
   flex-wrap: wrap;
 }
 
+.department-picker {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.department-picker label {
+  font-size: 0.8rem;
+  color: #d1d5db;
+}
+
+.department-picker select {
+  border: 1px solid #4b5563;
+  border-radius: 8px;
+  background: #111827;
+  color: #f9fafb;
+  padding: 0.55rem 0.7rem;
+}
+
+.auth-panel {
+  border: 1px solid #374151;
+  border-radius: 12px;
+  background: #1f2937;
+  padding: 0.85rem;
+}
+
+.settings-panel {
+  border: 1px solid #374151;
+  border-radius: 12px;
+  background: #1f2937;
+  padding: 0.85rem;
+}
+
+.settings-panel summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.settings-body {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.settings-body label {
+  font-size: 0.8rem;
+  color: #d1d5db;
+}
+
+.settings-body input {
+  border: 1px solid #4b5563;
+  border-radius: 8px;
+  background: #111827;
+  color: #f9fafb;
+  padding: 0.55rem 0.7rem;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.auth-panel h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.auth-copy {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+  color: #d1d5db;
+}
+
+.auth-form {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.auth-form input {
+  border: 1px solid #4b5563;
+  border-radius: 8px;
+  background: #111827;
+  color: #f9fafb;
+  padding: 0.55rem 0.7rem;
+}
+
 button {
   border: 1px solid #4b5563;
   border-radius: 8px;
@@ -37,6 +125,11 @@ button {
   color: #f9fafb;
   padding: 0.45rem 0.7rem;
   cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 button.primary {
