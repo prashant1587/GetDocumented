@@ -1,4 +1,5 @@
 const API_BASE_URL = 'http://localhost:8080';
+const WEB_APP_BASE_URL = 'http://localhost:8080';
 const LOGIN_ENDPOINT = '/api/auth/login';
 const ME_ENDPOINT = '/api/auth/me';
 const DEPARTMENTS_ENDPOINT = '/api/departments';
@@ -19,10 +20,7 @@ const authLoggedOut = document.getElementById('authLoggedOut');
 const authLoggedIn = document.getElementById('authLoggedIn');
 const authUserEmail = document.getElementById('authUserEmail');
 const authStatus = document.getElementById('authStatus');
-const loginForm = document.getElementById('loginForm');
-const loginEmailInput = document.getElementById('loginEmail');
-const loginPasswordInput = document.getElementById('loginPassword');
-const loginButton = document.getElementById('loginButton');
+const openLoginButton = document.getElementById('openLoginButton');
 const logoutButton = document.getElementById('logoutButton');
 const departmentPicker = document.getElementById('departmentPicker');
 const saveDepartmentSelect = document.getElementById('saveDepartment');
@@ -83,51 +81,14 @@ async function init() {
   postPortMessage({ type: 'REQUEST_SESSION', tabId: currentTabId });
 }
 
-loginForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-
-  const email = loginEmailInput.value.trim();
-  const password = loginPasswordInput.value;
-
-  if (!email || !password) {
-    showAuthStatus('Email and password are required.', 'error');
-    return;
-  }
-
-  loginButton.disabled = true;
-  showAuthStatus('Logging in...', null);
-
+openLoginButton.addEventListener('click', async () => {
   try {
-    const response = await fetch(`${API_BASE_URL}${LOGIN_ENDPOINT}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ email, password })
+    await chrome.tabs.create({
+      url: `${WEB_APP_BASE_URL}/extension-auth`
     });
-
-    if (!response.ok) {
-      throw new Error(await parseApiError(response));
-    }
-
-    const responseData = await response.json();
-
-    if (!responseData?.token || !responseData?.user) {
-      throw new Error('Backend did not return a valid login response.');
-    }
-
-    authToken = responseData.token;
-    authUser = responseData.user;
-    await persistAuthSession();
-    await loadDepartments();
-    loginForm.reset();
-    updateAuthUi();
-    showAuthStatus('Logged in. Capture is now enabled.', 'success');
+    showAuthStatus('Complete login or registration in the web app. This extension will sign in automatically.', null);
   } catch (error) {
-    await clearAuthSession();
-    showAuthStatus(`Unable to log in: ${error.message}`, 'error');
-  } finally {
-    loginButton.disabled = false;
+    showAuthStatus(`Unable to open the web app: ${error.message}`, 'error');
   }
 });
 
