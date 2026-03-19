@@ -29,21 +29,6 @@
       <p id="authStatus" class="status" aria-live="polite"></p>
     </section>
 
-    <section class="settings-panel">
-      <details>
-        <summary>Extension Settings</summary>
-        <div class="settings-body">
-          <label for="apiBaseUrl">Backend API Base URL</label>
-          <input id="apiBaseUrl" type="url" placeholder="http://localhost:3000" />
-          <div class="settings-actions">
-            <button id="saveSettings" type="button">Save Settings</button>
-            <button id="resetSettings" type="button">Reset</button>
-          </div>
-          <p id="settingsStatus" class="status" aria-live="polite"></p>
-        </div>
-      </details>
-    </section>
-
     <section class="controls">
       <button id="restartCapture" class="primary">Restart Capture</button>
       <button id="exportPdf" class="primary">Export</button>
@@ -56,6 +41,13 @@
         Save To Department
       </label>
       <select id="saveDepartment"></select>
+    </section>
+
+    <section class="document-fields">
+      <label for="documentTitle">
+        Document Title
+      </label>
+      <input id="documentTitle" type="text" placeholder="Leave blank to use the generated title" />
     </section>
 
     <p id="saveStatus" class="status" aria-live="polite"></p>

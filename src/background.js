@@ -30,7 +30,7 @@ chrome.runtime.onConnect.addListener((port) => {
       tabId = message.tabId;
       if (typeof tabId !== 'number') return;
       panelPorts.set(tabId, port);
-      sendSessionUpdate(tabId);
+      void sendSessionUpdate(tabId);
       await requestAuthSync(tabId);
       return;
     }
@@ -39,7 +39,7 @@ chrome.runtime.onConnect.addListener((port) => {
       if (typeof message.tabId !== 'number') return;
       sessionsByTab.set(message.tabId, []);
       await chrome.storage.local.set({ [storageKey(message.tabId)]: [] });
-      sendSessionUpdate(message.tabId);
+      void sendSessionUpdate(message.tabId);
     }
   });
 
@@ -107,7 +107,7 @@ async function handleClickCapture(tab, payload) {
   sessionsByTab.set(tabId, session);
   await chrome.storage.local.set({ [storageKey(tabId)]: session });
 
-  sendSessionUpdate(tabId);
+  void sendSessionUpdate(tabId);
 }
 
 async function getSession(tabId) {
@@ -127,11 +127,16 @@ async function sendSessionUpdate(tabId) {
   if (!port) return;
 
   const session = await getSession(tabId);
-  port.postMessage({
-    type: ACTIONS.SESSION_UPDATED,
-    tabId,
-    payload: session
-  });
+
+  try {
+    port.postMessage({
+      type: ACTIONS.SESSION_UPDATED,
+      tabId,
+      payload: session
+    });
+  } catch {
+    panelPorts.delete(tabId);
+  }
 }
 
 function storageKey(tabId) {

@@ -32,5 +32,15 @@
       ],
       "run_at": "document_idle"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/pageBridge.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
   ]
 }

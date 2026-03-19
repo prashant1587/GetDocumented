@@ -1,9 +1,18 @@
 const CLICK_THROTTLE_MS = 250;
 const AUTH_TOKEN_KEY = 'getdocumented.auth.token';
 const AUTH_USER_KEY = 'getdocumented.auth.user';
-const AUTH_SYNC_EVENT = 'getdocumented-extension-auth-sync';
-const WEB_APP_ORIGINS = new Set(['http://localhost:8080', 'http://127.0.0.1:8080']);
+const PAGE_BRIDGE_SOURCE = 'getdocumented-page-bridge';
+const PAGE_BRIDGE_REQUEST_SOURCE = 'getdocumented-extension';
+const PAGE_BRIDGE_REQUEST = 'GETDOCUMENTED_PAGE_BRIDGE_REQUEST';
+const PAGE_BRIDGE_EVENT = 'GETDOCUMENTED_PAGE_BRIDGE_EVENT';
+const WEB_APP_ORIGINS = new Set([
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+  'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com',
+  'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com'
+]);
 let lastClickAt = 0;
+let extensionContextAvailable = true;
 
 window.addEventListener(
   'click',
@@ -32,7 +41,7 @@ window.addEventListener(
       }
     };
 
-    chrome.runtime.sendMessage({
+    void safeSendRuntimeMessage({
       type: 'CLICK_CAPTURED',
       payload
     });
@@ -112,51 +121,61 @@ function isWebAppPage() {
 }
 
 function installAuthBridge() {
-  window.addEventListener(AUTH_SYNC_EVENT, (event) => {
-    const payload = event.detail;
-    chrome.runtime.sendMessage({
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data?.source !== PAGE_BRIDGE_SOURCE || event.data?.type !== PAGE_BRIDGE_EVENT) return;
+
+    const payload = event.data.payload;
+    void safeSendRuntimeMessage({
       type: 'AUTH_SESSION_SYNC',
       payload
     });
   });
+
+  injectPageBridgeScript();
 }
 
 function requestAuthSessionSnapshot() {
-  injectPageScript(() => {
-    const emitSession = () => {
-      let user = null;
-      const rawUser = window.localStorage.getItem('getdocumented.auth.user');
-
-      if (rawUser) {
-        try {
-          user = JSON.parse(rawUser);
-        } catch {
-          user = null;
-        }
-      }
-
-      window.dispatchEvent(
-        new CustomEvent('getdocumented-extension-auth-sync', {
-          detail: {
-            token: window.localStorage.getItem('getdocumented.auth.token'),
-            user
-          }
-        })
-      );
-    };
-
-    emitSession();
-    window.addEventListener('storage', (storageEvent) => {
-      if (storageEvent.key === 'getdocumented.auth.token' || storageEvent.key === 'getdocumented.auth.user') {
-        emitSession();
-      }
-    });
-  });
+  window.postMessage(
+    {
+      source: PAGE_BRIDGE_REQUEST_SOURCE,
+      type: PAGE_BRIDGE_REQUEST
+    },
+    window.location.origin
+  );
 }
 
-function injectPageScript(callback) {
+function injectPageBridgeScript() {
+  if (document.querySelector('script[data-getdocumented-page-bridge="true"]')) {
+    return;
+  }
+
   const script = document.createElement('script');
-  script.textContent = `(${callback.toString()})();`;
+  script.src = chrome.runtime.getURL('src/pageBridge.js');
+  script.dataset.getdocumentedPageBridge = 'true';
+  script.async = false;
   document.documentElement.appendChild(script);
-  script.remove();
+  script.addEventListener('load', () => script.remove(), { once: true });
+  script.addEventListener('error', () => script.remove(), { once: true });
+}
+
+async function safeSendRuntimeMessage(message) {
+  if (!extensionContextAvailable) {
+    return;
+  }
+
+  try {
+    await chrome.runtime.sendMessage(message);
+  } catch (error) {
+    if (isExtensionContextInvalidated(error)) {
+      extensionContextAvailable = false;
+      return;
+    }
+
+    throw error;
+  }
+}
+
+function isExtensionContextInvalidated(error) {
+  return error instanceof Error && /Extension context invalidated/i.test(error.message);
 }

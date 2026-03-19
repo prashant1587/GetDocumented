@@ -1,4 +1,4 @@
-const API_BASE_URL = 'http://localhost:3000';
+const API_BASE_URL = 'http://ec2-13-50-112-21.eu-north-1.compute.amazonaws.com';
 const LOGIN_ENDPOINT = '/api/auth/login';
 const ME_ENDPOINT = '/api/auth/me';
 const DEPARTMENTS_ENDPOINT = '/api/departments';
@@ -8,7 +8,6 @@ const PRESIGNED_UPLOAD_ENDPOINT = '/api/documents/uploads/presigned-url';
 const AUTH_TOKEN_KEY = 'authToken';
 const AUTH_USER_KEY = 'authUser';
 
-const port = chrome.runtime.connect({ name: 'sidepanel' });
 const stepsContainer = document.getElementById('steps');
 const stepTemplate = document.getElementById('stepTemplate');
 const restartCaptureButton = document.getElementById('restartCapture');
@@ -27,12 +26,15 @@ const loginButton = document.getElementById('loginButton');
 const logoutButton = document.getElementById('logoutButton');
 const departmentPicker = document.getElementById('departmentPicker');
 const saveDepartmentSelect = document.getElementById('saveDepartment');
+const documentTitleInput = document.getElementById('documentTitle');
 
 let currentTabId;
 let session = [];
 let authToken = null;
 let authUser = null;
 let availableDepartments = [];
+let port = null;
+let portConnected = false;
 
 init();
 
@@ -76,16 +78,9 @@ async function init() {
   }
 
   await restoreAuthSession();
-  port.postMessage({ type: 'REQUEST_SESSION', tabId: currentTabId });
+  connectPort();
+  postPortMessage({ type: 'REQUEST_SESSION', tabId: currentTabId });
 }
-
-port.onMessage.addListener((message) => {
-  if (message.type !== 'SESSION_UPDATED') return;
-  if (message.tabId !== currentTabId) return;
-  session = message.payload;
-  renderSession();
-  clearStatus();
-});
 
 loginForm.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -142,7 +137,8 @@ logoutButton.addEventListener('click', async () => {
 
 clearButton.addEventListener('click', () => {
   if (!currentTabId) return;
-  port.postMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
+  documentTitleInput.value = '';
+  postPortMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
 });
 
 restartCaptureButton.addEventListener('click', () => {
@@ -153,7 +149,8 @@ restartCaptureButton.addEventListener('click', () => {
 
   if (!currentTabId) return;
 
-  port.postMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
+  documentTitleInput.value = '';
+  postPortMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
   showStatus('Capture restarted. Your next click will become step 1.', 'success');
 });
 
@@ -173,7 +170,7 @@ saveButton.addEventListener('click', async () => {
 
   try {
     const savedDocument = await saveSession(session);
-    showStatus(`Saved successfully (${savedDocument.id}).`, 'success');
+    showStatus(`Saved successfully (${savedDocument.title || savedDocument.id}).`, 'success');
   } catch (error) {
     if (error.status === 401) {
       await clearAuthSession();
@@ -202,7 +199,7 @@ exportButton.addEventListener('click', async () => {
 
   try {
     const pdfBlob = await exportSession(session);
-    downloadBlob(pdfBlob, `${buildDocumentSlug(session)}.pdf`);
+    downloadBlob(pdfBlob, `${buildDocumentSlug(getDocumentTitle(session))}.pdf`);
     showStatus('Export finished.', 'success');
   } catch (error) {
     if (error.status === 401) {
@@ -229,14 +226,64 @@ function renderSession() {
   for (const step of session) {
     const fragment = stepTemplate.content.cloneNode(true);
     fragment.querySelector('h2').textContent = `Step ${step.stepNumber}: ${step.title}`;
-    fragment.querySelector('.meta').textContent = `Direction: ${step.direction} • Click: (${step.clickPosition.x}, ${step.clickPosition.y})`;
-    fragment.querySelector('.selector').textContent = step.selector;
+    fragment.querySelector('.meta').textContent = `Click on: ${step.title}`;
 
     const image = fragment.querySelector('img');
     image.src = step.screenshot;
     image.alt = `Step ${step.stepNumber} screenshot`;
 
     stepsContainer.appendChild(fragment);
+  }
+}
+
+function connectPort() {
+  if (portConnected) {
+    return;
+  }
+
+  try {
+    port = chrome.runtime.connect({ name: 'sidepanel' });
+  } catch (error) {
+    showStatus(`Extension connection unavailable: ${error.message}`, 'error');
+    return;
+  }
+
+  portConnected = true;
+
+  port.onMessage.addListener((message) => {
+    if (message.type !== 'SESSION_UPDATED') return;
+    if (message.tabId !== currentTabId) return;
+    session = message.payload;
+    renderSession();
+    clearStatus();
+  });
+
+  port.onDisconnect.addListener(() => {
+    portConnected = false;
+    port = null;
+  });
+}
+
+function postPortMessage(message) {
+  if (!currentTabId) {
+    return false;
+  }
+
+  if (!portConnected) {
+    connectPort();
+  }
+
+  if (!port) {
+    return false;
+  }
+
+  try {
+    port.postMessage(message);
+    return true;
+  } catch {
+    portConnected = false;
+    port = null;
+    return false;
   }
 }
 
@@ -330,7 +377,8 @@ async function buildSaveDocumentPayload(steps) {
   }
 
   return {
-    title: buildDocumentTitle(steps),
+    title: getDocumentTitle(steps),
+    sourceUrl: getDocumentSourceUrl(steps),
     departmentId: getSelectedDepartmentId(),
     items
   };
@@ -355,7 +403,8 @@ async function loadDepartments() {
 
 function buildDocumentPayload(steps) {
   return {
-    title: buildDocumentTitle(steps),
+    title: getDocumentTitle(steps),
+    sourceUrl: getDocumentSourceUrl(steps),
     items: steps.map((step, index) => ({
       title: step.title,
       description: step.direction,
@@ -491,11 +540,23 @@ function buildDocumentTitle(steps) {
     }
   }
 
-  return `${host} walkthrough (${new Date().toISOString()})`;
+  return `${host} Product Walkthrough – ${new Date().toLocaleDateString(undefined, {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  })}`;
 }
 
-function buildDocumentSlug(steps) {
-  return buildDocumentTitle(steps)
+function getDocumentTitle(steps) {
+  return documentTitleInput.value.trim() || buildDocumentTitle(steps);
+}
+
+function getDocumentSourceUrl(steps) {
+  return steps[0]?.pageUrl || null;
+}
+
+function buildDocumentSlug(title) {
+  return title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
