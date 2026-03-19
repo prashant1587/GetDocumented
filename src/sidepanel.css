@@ -78,18 +78,9 @@ header p {
   color: #d1d5db;
 }
 
-.auth-form {
+.auth-launch-button {
   margin-top: 0.75rem;
-  display: grid;
-  gap: 0.5rem;
-}
-
-.auth-form input {
-  border: 1px solid #4b5563;
-  border-radius: 8px;
-  background: #111827;
-  color: #f9fafb;
-  padding: 0.55rem 0.7rem;
+  width: 100%;
 }
 
 button {

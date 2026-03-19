@@ -15,12 +15,8 @@
     <section id="authPanel" class="auth-panel">
       <div id="authLoggedOut">
         <h2>Extension Login</h2>
-        <p class="auth-copy">Log in to enable capture and save documents to the shared workspace.</p>
-        <form id="loginForm" class="auth-form">
-          <input id="loginEmail" type="email" placeholder="Email" autocomplete="username" />
-          <input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password" />
-          <button id="loginButton" type="submit" class="primary">Log in</button>
-        </form>
+        <p class="auth-copy">Log in from the web app to enable capture and save documents to the shared workspace.</p>
+        <button id="openLoginButton" type="button" class="primary auth-launch-button">Log in</button>
       </div>
       <div id="authLoggedIn" hidden>
         <p class="auth-copy">Authenticated as <strong id="authUserEmail"></strong></p>
