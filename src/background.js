@@ -1,5 +1,6 @@
 const sessionsByTab = new Map();
 const panelPorts = new Map();
+const pendingSessionFlush = new Set(); // tabs with clicks captured before panel connected
 const AUTH_TOKEN_KEY = 'authToken';
 const AUTH_USER_KEY = 'authUser';
 
@@ -30,7 +31,11 @@ chrome.runtime.onConnect.addListener((port) => {
       tabId = message.tabId;
       if (typeof tabId !== 'number') return;
       panelPorts.set(tabId, port);
+
+      // Flush any clicks that arrived before the panel finished connecting
       void sendSessionUpdate(tabId);
+      pendingSessionFlush.delete(tabId);
+
       await requestAuthSync(tabId);
       return;
     }
@@ -71,6 +76,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   panelPorts.delete(tabId);
+  pendingSessionFlush.delete(tabId);
 });
 
 async function handleClickCapture(tab, payload) {
@@ -80,7 +86,19 @@ async function handleClickCapture(tab, payload) {
   const stored = await chrome.storage.local.get(AUTH_TOKEN_KEY);
 
   if (!stored[AUTH_TOKEN_KEY]) {
-    throw new Error('Authentication required. Log in from the extension side panel to enable capture.');
+    // Notify the panel so the user sees a clear message instead of silent failure
+    const port = panelPorts.get(tabId);
+    if (port) {
+      try {
+        port.postMessage({
+          type: 'AUTH_REQUIRED',
+          message: 'Log in from the side panel to enable click capture.'
+        });
+      } catch {
+        panelPorts.delete(tabId);
+      }
+    }
+    return;
   }
 
   const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {
@@ -107,7 +125,12 @@ async function handleClickCapture(tab, payload) {
   sessionsByTab.set(tabId, session);
   await chrome.storage.local.set({ [storageKey(tabId)]: session });
 
-  void sendSessionUpdate(tabId);
+  if (!panelPorts.has(tabId)) {
+    // Panel not yet connected — mark as pending; will flush on REQUEST_SESSION
+    pendingSessionFlush.add(tabId);
+  } else {
+    void sendSessionUpdate(tabId);
+  }
 }
 
 async function getSession(tabId) {

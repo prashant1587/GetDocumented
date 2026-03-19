@@ -1,4 +1,4 @@
-const API_BASE_URL = 'http://ec2-13-50-112-21.eu-north-1.compute.amazonaws.com';
+const API_BASE_URL = 'http://localhost:8080';
 const LOGIN_ENDPOINT = '/api/auth/login';
 const ME_ENDPOINT = '/api/auth/me';
 const DEPARTMENTS_ENDPOINT = '/api/departments';
@@ -27,6 +27,7 @@ const logoutButton = document.getElementById('logoutButton');
 const departmentPicker = document.getElementById('departmentPicker');
 const saveDepartmentSelect = document.getElementById('saveDepartment');
 const documentTitleInput = document.getElementById('documentTitle');
+const saveVisibilitySelect = document.getElementById('saveVisibility');
 
 let currentTabId;
 let session = [];
@@ -251,6 +252,12 @@ function connectPort() {
   portConnected = true;
 
   port.onMessage.addListener((message) => {
+    // Background signals that a click was blocked because the user is not authenticated
+    if (message.type === 'AUTH_REQUIRED') {
+      showAuthStatus('Log in to enable click capture.', 'error');
+      return;
+    }
+
     if (message.type !== 'SESSION_UPDATED') return;
     if (message.tabId !== currentTabId) return;
     session = message.payload;
@@ -380,6 +387,7 @@ async function buildSaveDocumentPayload(steps) {
     title: getDocumentTitle(steps),
     sourceUrl: getDocumentSourceUrl(steps),
     departmentId: getSelectedDepartmentId(),
+    visibility: saveVisibilitySelect?.value || 'public',
     items
   };
 }

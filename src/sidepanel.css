@@ -46,6 +46,7 @@ header p {
 }
 
 .department-picker select,
+.document-fields select,
 .document-fields input {
   border: 1px solid #4b5563;
   border-radius: 8px;
