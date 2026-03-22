@@ -18,6 +18,8 @@ const EXPORT_ENDPOINT = '/api/documents/export/pdf';
 const PRESIGNED_UPLOAD_ENDPOINT = '/api/documents/uploads/presigned-url';
 const AUTH_TOKEN_KEY = 'authToken';
 const AUTH_USER_KEY = 'authUser';
+const ACTIVE_SESSION_KEY = 'session:active';
+const CAPTURE_ACROSS_TABS_KEY = 'captureAcrossTabs';
 const LOG_PREFIX = '[GetDocumented:sidepanel]';
 
 const stepsContainer = document.getElementById('steps');
@@ -37,6 +39,9 @@ const authUserInitials = document.getElementById('authUserInitials');
 const authStatus = document.getElementById('authStatus');
 const openLoginButton = document.getElementById('openLoginButton');
 const logoutButton = document.getElementById('logoutButton');
+const settingsButton = document.getElementById('settingsButton');
+const settingsPanel = document.getElementById('settingsPanel');
+const captureAcrossTabsToggle = document.getElementById('captureAcrossTabsToggle');
 const documentSearchInput = document.getElementById('documentSearch');
 const START_CAPTURE_ATTACH_DELAY_MS = 3000;
 
@@ -52,6 +57,7 @@ let documentSearchTerm = '';
 let authSyncIntervalId = null;
 let pendingAuthReturn = null;
 let isCaptureMode = false;
+let captureAcrossTabs = false;
 
 init();
 
@@ -80,12 +86,17 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     return;
   }
 
-  const sessionKey = currentTabId ? storageKey(currentTabId) : null;
+  const sessionKey = storageKey();
   if (sessionKey && changes[sessionKey]) {
     session = Array.isArray(changes[sessionKey].newValue) ? changes[sessionKey].newValue : [];
     console.debug(LOG_PREFIX, 'session storage updated', { tabId: currentTabId, count: session.length });
     renderSession();
     updateControlState();
+  }
+
+  if (changes[CAPTURE_ACROSS_TABS_KEY]) {
+    captureAcrossTabs = Boolean(changes[CAPTURE_ACROSS_TABS_KEY].newValue);
+    captureAcrossTabsToggle.checked = captureAcrossTabs;
   }
 
   if (!changes[AUTH_TOKEN_KEY] && !changes[AUTH_USER_KEY]) {
@@ -129,6 +140,7 @@ async function init() {
     return;
   }
 
+  await restoreCaptureSettings();
   await restoreAuthSession();
   connectPort();
   updateAuthPolling();
@@ -147,7 +159,9 @@ async function syncCurrentTabContext({ force = false } = {}) {
   }
 
   currentTabId = nextTabId;
-  session = [];
+  if (!isCaptureMode) {
+    session = [];
+  }
   console.debug(LOG_PREFIX, 'syncCurrentTabContext', { currentTabId });
   renderSession();
   postPortMessage({ type: 'REQUEST_SESSION', tabId: currentTabId });
@@ -177,8 +191,32 @@ logoutButton.addEventListener('click', async () => {
   showAuthStatus('Logged out. Capture is disabled until you sign in again.', 'success');
 });
 
+settingsButton.addEventListener('click', () => {
+  const nextHidden = !settingsPanel.hidden;
+  settingsPanel.hidden = nextHidden;
+  settingsButton.setAttribute('aria-expanded', String(!nextHidden));
+});
+
+captureAcrossTabsToggle.addEventListener('change', async (event) => {
+  captureAcrossTabs = Boolean(event.target.checked);
+  await chrome.storage.local.set({ [CAPTURE_ACROSS_TABS_KEY]: captureAcrossTabs });
+});
+
+document.addEventListener('click', (event) => {
+  if (settingsPanel.hidden) {
+    return;
+  }
+
+  if (settingsPanel.contains(event.target) || settingsButton.contains(event.target)) {
+    return;
+  }
+
+  settingsPanel.hidden = true;
+  settingsButton.setAttribute('aria-expanded', 'false');
+});
+
 clearButton.addEventListener('click', async () => {
-  await syncCurrentTabContext({ force: true });
+  await stopCaptureSession();
   await resetCaptureSession();
   setCaptureMode(false);
 });
@@ -215,7 +253,7 @@ restartCaptureButton.addEventListener('click', async () => {
       return;
     }
 
-    await resetCaptureSession();
+    postPortMessage({ type: 'START_CAPTURE_SESSION', tabId: currentTabId, captureAcrossTabs });
     showStatus('Capture restarted. Your next click will become step 1.', 'success');
   } catch (error) {
     showStatus(`Unable to start capture: ${error.message}`, 'error');
@@ -240,6 +278,7 @@ saveButton.addEventListener('click', async () => {
 
   try {
     const savedDocument = await saveSession(session);
+    await stopCaptureSession();
     await resetCaptureSession();
     setCaptureMode(false);
     await loadAccessibleDocuments();
@@ -445,6 +484,12 @@ async function restoreAuthSession() {
     await clearAuthSession();
     showAuthStatus(`Log in to enable capture. ${error.message}`, 'error');
   }
+}
+
+async function restoreCaptureSettings() {
+  const stored = await chrome.storage.local.get(CAPTURE_ACROSS_TABS_KEY);
+  captureAcrossTabs = Boolean(stored[CAPTURE_ACROSS_TABS_KEY]);
+  captureAcrossTabsToggle.checked = captureAcrossTabs;
 }
 
 async function persistAuthSession() {
@@ -749,6 +794,14 @@ async function resetCaptureSession() {
   postPortMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
 }
 
+async function stopCaptureSession() {
+  if (!currentTabId) {
+    return;
+  }
+
+  postPortMessage({ type: 'STOP_CAPTURE_SESSION', tabId: currentTabId });
+}
+
 function renderDocuments() {
   documentsList.innerHTML = '';
 
@@ -931,8 +984,8 @@ function clearTransientStatus() {
   clearStatus();
 }
 
-function storageKey(tabId) {
-  return `session:${tabId}`;
+function storageKey() {
+  return ACTIVE_SESSION_KEY;
 }
 
 function delay(ms) {

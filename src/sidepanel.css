@@ -92,6 +92,69 @@ body:not(.authenticated) .app-shell {
   gap: 10px;
 }
 
+.settings-wrap {
+  position: relative;
+}
+
+.settings-button {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-button svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.settings-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 248px;
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.12);
+  z-index: 10;
+}
+
+.settings-option {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.settings-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-copy strong {
+  font-size: 0.9rem;
+  color: #111827;
+}
+
+.settings-copy small {
+  color: #6b7280;
+  line-height: 1.35;
+}
+
+.settings-option input {
+  margin-top: 2px;
+  width: 18px;
+  height: 18px;
+}
+
 .user-chip {
   display: inline-flex;
   align-items: center;
