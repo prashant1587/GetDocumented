@@ -85,6 +85,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     session = Array.isArray(changes[sessionKey].newValue) ? changes[sessionKey].newValue : [];
     console.debug(LOG_PREFIX, 'session storage updated', { tabId: currentTabId, count: session.length });
     renderSession();
+    updateControlState();
   }
 
   if (!changes[AUTH_TOKEN_KEY] && !changes[AUTH_USER_KEY]) {
@@ -272,6 +273,8 @@ function renderSession() {
   for (const step of filteredSession) {
     stepsContainer.appendChild(createStepElement(step));
   }
+
+  updateControlState();
 }
 
 function appendStep(step) {
@@ -286,6 +289,7 @@ function appendStep(step) {
   }
 
   stepsContainer.appendChild(createStepElement(step));
+  updateControlState();
 }
 
 function createStepElement(step) {
@@ -358,6 +362,7 @@ function connectPort() {
     console.debug(LOG_PREFIX, 'SESSION_UPDATED', { tabId: message.tabId, count: message.payload?.length || 0 });
     session = message.payload;
     renderSession();
+    updateControlState();
     clearTransientStatus();
   });
 
