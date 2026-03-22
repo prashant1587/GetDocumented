@@ -283,6 +283,9 @@ async function setCaptureEnabled(tabId, enabled) {
   }
 
   if (enabled) {
+    // Mark the tab as capture-enabled *before* the async injection so that any
+    // clicks the already-running content script fires during injection are not
+    // silently dropped by the captureEnabledTabs guard in handleInteractionCapture.
     captureEnabledTabs.add(tabId);
     await ensureContentScriptInjected(tabId);
   } else {

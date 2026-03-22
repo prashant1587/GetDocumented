@@ -401,6 +401,22 @@ async function setCaptureStartingOverlay(tabId, visible) {
   }
 
   try {
+    // On first install the content script may not yet be running in this tab.
+    // Inject it proactively so the overlay message always has a recipient.
+    if (visible) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['src/content.js']
+        });
+        // Give the freshly-injected script a tick to finish installing its listeners
+        // before we fire the message at it.
+        await delay(60);
+      } catch {
+        // Already injected or tab cannot be scripted — proceed anyway.
+      }
+    }
+
     await chrome.tabs.sendMessage(tabId, {
       type: visible ? 'SHOW_CAPTURE_ATTACHING' : 'HIDE_CAPTURE_ATTACHING'
     });
