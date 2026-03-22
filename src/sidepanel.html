@@ -7,64 +7,83 @@
     <link rel="stylesheet" href="./sidepanel.css" />
   </head>
   <body>
-    <header>
-      <h1>GetDocumented</h1>
-      <p>Click through any page to build your visual documentation flow.</p>
-    </header>
-
-    <section id="authPanel" class="auth-panel">
-      <div id="authLoggedOut">
-        <h2>Extension Login</h2>
-        <p class="auth-copy">Log in from the web app to enable capture and save documents to the shared workspace.</p>
-        <button id="openLoginButton" type="button" class="primary auth-launch-button">Log in</button>
-      </div>
-      <div id="authLoggedIn" hidden>
-        <p class="auth-copy">Authenticated as <strong id="authUserEmail"></strong></p>
-        <button id="logoutButton" type="button">Log out</button>
-      </div>
-      <p id="authStatus" class="status" aria-live="polite"></p>
+    <section id="authLoggedOut" class="logged-out-screen">
+      <button id="openLoginButton" type="button" class="login-centered-button">Login</button>
+      <p id="authStatus" class="status auth-status-centered" aria-live="polite"></p>
     </section>
 
-    <section class="controls">
-      <button id="restartCapture" class="primary">Restart Capture</button>
-      <button id="exportPdf" class="primary">Export</button>
-      <button id="saveSession">Save</button>
-      <button id="clearSession">Clear</button>
-    </section>
+    <main id="appShell" class="app-shell" hidden>
+      <header class="topbar">
+        <div class="brand-mark">GD</div>
+        <div class="topbar-actions">
+          <div class="user-chip">
+            <span class="user-chip-badge" id="authUserInitials">U</span>
+            <strong id="authUserEmail"></strong>
+          </div>
+          <button id="logoutButton" type="button" class="icon-button" aria-label="Log out">Log out</button>
+        </div>
+      </header>
 
-    <section id="departmentPicker" class="department-picker" hidden>
-      <label for="saveDepartment">
-        Save To Group
-      </label>
-      <select id="saveDepartment"></select>
-    </section>
+      <section id="launcherView" class="launcher-view">
+        <section class="hero-card">
+          <button id="restartCapture" class="capture-button">Start Capture</button>
+        </section>
 
-    <section class="document-fields">
-      <label for="saveVisibility">
-        Visibility
-      </label>
-      <select id="saveVisibility">
-        <option value="public">Public</option>
-        <option value="private">Private</option>
-      </select>
-    </section>
+        <section class="search-card">
+          <input id="documentSearch" type="search" placeholder="Search documents" aria-label="Search documents you can access" />
+        </section>
 
-    <section class="document-fields">
-      <label for="documentTitle">
-        Document Title
-      </label>
-      <input id="documentTitle" type="text" placeholder="Leave blank to use the generated title" />
-    </section>
+        <section class="documents-section">
+          <h2>Documents you can access</h2>
+          <section id="documentsList" class="documents-list"></section>
+        </section>
+      </section>
 
-    <p id="saveStatus" class="status" aria-live="polite"></p>
+      <p id="saveStatus" class="status" aria-live="polite"></p>
 
-    <section id="steps" class="steps"></section>
+      <section id="captureView" class="capture-view" hidden>
+        <section class="steps-section">
+          <h2>Captured steps</h2>
+          <section id="steps" class="steps"></section>
+        </section>
+
+        <div class="thread-actions">
+          <button id="saveSession" type="button" class="floating-action floating-action-save" aria-label="Save thread" title="Save thread">
+            <svg viewBox="0 0 512 512" aria-hidden="true">
+              <path d="M173.9 439.4L7.5 273c-10-10-10-26.2 0-36.2l36.2-36.2c10-10 26.2-10 36.2 0L192 312.7 432.1 72.6c10-10 26.2-10 36.2 0l36.2 36.2c10 10 10 26.2 0 36.2L210.1 439.4c-10 10-26.2 10-36.2 0z"/>
+            </svg>
+          </button>
+          <button id="clearSession" type="button" class="floating-action floating-action-delete" aria-label="Delete thread" title="Delete thread">
+            <svg viewBox="0 0 448 512" aria-hidden="true">
+              <path d="M135.2 17.7C140.7 7.1 151.7 0 163.8 0h120.4c12.1 0 23.1 7.1 28.6 17.7L328 32H432c8.8 0 16 7.2 16 16v32c0 8.8-7.2 16-16 16h-16l-21.2 339.3c-1.6 25.7-22.9 45.7-48.7 45.7H102c-25.8 0-47.1-20-48.7-45.7L32 96H16C7.2 96 0 88.8 0 80V48c0-8.8 7.2-16 16-16h104l15.2-14.3zM177.3 416c8.8 0 16-7.2 16-16V176c0-8.8-7.2-16-16-16h-16c-8.8 0-16 7.2-16 16v224c0 8.8 7.2 16 16 16h16zm112 0c8.8 0 16-7.2 16-16V176c0-8.8-7.2-16-16-16h-16c-8.8 0-16 7.2-16 16v224c0 8.8 7.2 16 16 16h16z"/>
+            </svg>
+          </button>
+        </div>
+      </section>
+    </main>
     <template id="stepTemplate">
       <article class="step">
-        <h2></h2>
-        <p class="meta"></p>
-        <p class="selector"></p>
         <img alt="Captured click screenshot" />
+        <div class="step-copy">
+          <h2></h2>
+          <p class="meta"></p>
+          <p class="selector"></p>
+        </div>
+        <button type="button" class="step-delete-button" aria-label="Delete step" title="Delete step">
+          <svg viewBox="0 0 448 512" aria-hidden="true">
+            <path d="M135.2 17.7C140.7 7.1 151.7 0 163.8 0h120.4c12.1 0 23.1 7.1 28.6 17.7L328 32H432c8.8 0 16 7.2 16 16v32c0 8.8-7.2 16-16 16h-16l-21.2 339.3c-1.6 25.7-22.9 45.7-48.7 45.7H102c-25.8 0-47.1-20-48.7-45.7L32 96H16C7.2 96 0 88.8 0 80V48c0-8.8 7.2-16 16-16h104l15.2-14.3z"/>
+          </svg>
+        </button>
+      </article>
+    </template>
+    <template id="documentTemplate">
+      <article class="document-row">
+        <div class="document-copy">
+          <h3></h3>
+          <p class="document-meta"></p>
+          <p class="document-date"></p>
+        </div>
+        <span class="document-status"></span>
       </article>
     </template>
 

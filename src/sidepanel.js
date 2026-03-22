@@ -1,5 +1,15 @@
 const API_BASE_URL = 'http://localhost:8080';
 const WEB_APP_BASE_URL = 'http://localhost:8080';
+const WEB_APP_URL_PATTERNS = [
+  'http://localhost:5173/*',
+  'http://127.0.0.1:5173/*',
+  'http://localhost:4173/*',
+  'http://127.0.0.1:4173/*',
+  'http://localhost:8080/*',
+  'http://127.0.0.1:8080/*',
+  'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com/*',
+  'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com/*'
+];
 const LOGIN_ENDPOINT = '/api/auth/login';
 const ME_ENDPOINT = '/api/auth/me';
 const DEPARTMENTS_ENDPOINT = '/api/departments';
@@ -8,38 +18,73 @@ const EXPORT_ENDPOINT = '/api/documents/export/pdf';
 const PRESIGNED_UPLOAD_ENDPOINT = '/api/documents/uploads/presigned-url';
 const AUTH_TOKEN_KEY = 'authToken';
 const AUTH_USER_KEY = 'authUser';
+const LOG_PREFIX = '[GetDocumented:sidepanel]';
 
 const stepsContainer = document.getElementById('steps');
 const stepTemplate = document.getElementById('stepTemplate');
+const documentTemplate = document.getElementById('documentTemplate');
 const restartCaptureButton = document.getElementById('restartCapture');
-const exportButton = document.getElementById('exportPdf');
 const saveButton = document.getElementById('saveSession');
 const clearButton = document.getElementById('clearSession');
 const saveStatus = document.getElementById('saveStatus');
 const authLoggedOut = document.getElementById('authLoggedOut');
-const authLoggedIn = document.getElementById('authLoggedIn');
+const appShell = document.getElementById('appShell');
+const launcherView = document.getElementById('launcherView');
+const captureView = document.getElementById('captureView');
+const documentsList = document.getElementById('documentsList');
 const authUserEmail = document.getElementById('authUserEmail');
+const authUserInitials = document.getElementById('authUserInitials');
 const authStatus = document.getElementById('authStatus');
 const openLoginButton = document.getElementById('openLoginButton');
 const logoutButton = document.getElementById('logoutButton');
-const departmentPicker = document.getElementById('departmentPicker');
-const saveDepartmentSelect = document.getElementById('saveDepartment');
-const documentTitleInput = document.getElementById('documentTitle');
-const saveVisibilitySelect = document.getElementById('saveVisibility');
+const documentSearchInput = document.getElementById('documentSearch');
+const START_CAPTURE_ATTACH_DELAY_MS = 3000;
 
 let currentTabId;
 let session = [];
 let authToken = null;
 let authUser = null;
 let availableDepartments = [];
+let availableDocuments = [];
 let port = null;
 let portConnected = false;
+let documentSearchTerm = '';
+let authSyncIntervalId = null;
+let pendingAuthReturn = null;
+let isCaptureMode = false;
 
 init();
+
+chrome.tabs.onActivated.addListener(() => {
+  void syncCurrentTabContext();
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!tab?.active) {
+    return;
+  }
+
+  if (changeInfo.status === 'complete' || typeof changeInfo.url === 'string') {
+    void syncCurrentTabContext();
+  }
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    void syncCurrentTabContext();
+  }
+});
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') {
     return;
+  }
+
+  const sessionKey = currentTabId ? storageKey(currentTabId) : null;
+  if (sessionKey && changes[sessionKey]) {
+    session = Array.isArray(changes[sessionKey].newValue) ? changes[sessionKey].newValue : [];
+    console.debug(LOG_PREFIX, 'session storage updated', { tabId: currentTabId, count: session.length });
+    renderSession();
   }
 
   if (!changes[AUTH_TOKEN_KEY] && !changes[AUTH_USER_KEY]) {
@@ -58,34 +103,68 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 
   updateAuthUi();
+  console.debug(LOG_PREFIX, 'auth storage updated', { authenticated: isAuthenticated(), email: authUser?.email || null });
+
+  if (isAuthenticated()) {
+    void restoreSourceTabAfterAuth();
+  }
 
   if (isAuthenticated()) {
     void loadDepartments();
+    void loadAccessibleDocuments();
   } else {
     availableDepartments = [];
+    availableDocuments = [];
     updateDepartmentUi();
+    renderDocuments();
   }
 });
 
 async function init() {
-  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  currentTabId = activeTab?.id;
+  const didBindTab = await syncCurrentTabContext({ force: true });
 
-  if (!currentTabId) {
+  if (!didBindTab || !currentTabId) {
     stepsContainer.innerHTML = '<div class="empty">Unable to identify active tab.</div>';
     return;
   }
 
   await restoreAuthSession();
   connectPort();
+  updateAuthPolling();
+}
+
+async function syncCurrentTabContext({ force = false } = {}) {
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const nextTabId = activeTab?.id;
+
+  if (!nextTabId) {
+    return false;
+  }
+
+  if (!force && nextTabId === currentTabId) {
+    return true;
+  }
+
+  currentTabId = nextTabId;
+  session = [];
+  console.debug(LOG_PREFIX, 'syncCurrentTabContext', { currentTabId });
+  renderSession();
   postPortMessage({ type: 'REQUEST_SESSION', tabId: currentTabId });
+
+  return true;
 }
 
 openLoginButton.addEventListener('click', async () => {
   try {
-    await chrome.tabs.create({
-      url: `${WEB_APP_BASE_URL}/extension-auth`
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const createdTab = await chrome.tabs.create({
+      url: `${WEB_APP_BASE_URL}/login?extension=1`
     });
+    pendingAuthReturn = {
+      sourceTabId: activeTab?.id ?? null,
+      sourceWindowId: activeTab?.windowId ?? null,
+      authTabId: createdTab?.id ?? null
+    };
     showAuthStatus('Complete login or registration in the web app. This extension will sign in automatically.', null);
   } catch (error) {
     showAuthStatus(`Unable to open the web app: ${error.message}`, 'error');
@@ -97,23 +176,51 @@ logoutButton.addEventListener('click', async () => {
   showAuthStatus('Logged out. Capture is disabled until you sign in again.', 'success');
 });
 
-clearButton.addEventListener('click', () => {
-  if (!currentTabId) return;
-  documentTitleInput.value = '';
-  postPortMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
+clearButton.addEventListener('click', async () => {
+  await syncCurrentTabContext({ force: true });
+  await resetCaptureSession();
+  setCaptureMode(false);
 });
 
-restartCaptureButton.addEventListener('click', () => {
+documentSearchInput.addEventListener('input', (event) => {
+  documentSearchTerm = event.target.value.trim().toLowerCase();
+  renderDocuments();
+});
+
+restartCaptureButton.addEventListener('click', async () => {
   if (!isAuthenticated()) {
     showStatus('Log in to enable capture.', 'error');
     return;
   }
 
-  if (!currentTabId) return;
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tabId = activeTab?.id;
 
-  documentTitleInput.value = '';
-  postPortMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
-  showStatus('Capture restarted. Your next click will become step 1.', 'success');
+  if (!tabId) {
+    showStatus('Unable to identify active tab.', 'error');
+    return;
+  }
+
+  setCaptureMode(true);
+  await setCaptureStartingOverlay(tabId, true);
+  showStatus('Starting capture...', null);
+
+  try {
+    await delay(START_CAPTURE_ATTACH_DELAY_MS);
+    await syncCurrentTabContext({ force: true });
+
+    if (!currentTabId) {
+      showStatus('Unable to identify active tab.', 'error');
+      return;
+    }
+
+    await resetCaptureSession();
+    showStatus('Capture restarted. Your next click will become step 1.', 'success');
+  } catch (error) {
+    showStatus(`Unable to start capture: ${error.message}`, 'error');
+  } finally {
+    await setCaptureStartingOverlay(tabId, false);
+  }
 });
 
 saveButton.addEventListener('click', async () => {
@@ -132,7 +239,13 @@ saveButton.addEventListener('click', async () => {
 
   try {
     const savedDocument = await saveSession(session);
-    showStatus(`Saved successfully (${savedDocument.title || savedDocument.id}).`, 'success');
+    await resetCaptureSession();
+    setCaptureMode(false);
+    await loadAccessibleDocuments();
+    await chrome.tabs.create({
+      url: `${WEB_APP_BASE_URL}/documents/${savedDocument.id}?edit=1`
+    });
+    showStatus('Draft opened in the web editor. Review, edit, and publish from there.', 'success');
   } catch (error) {
     if (error.status === 401) {
       await clearAuthSession();
@@ -145,58 +258,70 @@ saveButton.addEventListener('click', async () => {
   }
 });
 
-exportButton.addEventListener('click', async () => {
-  if (!isAuthenticated()) {
-    showStatus('Log in to export captured steps.', 'error');
-    return;
-  }
-
-  if (!session.length) {
-    showStatus('Capture at least one step before exporting.', 'error');
-    return;
-  }
-
-  exportButton.disabled = true;
-  showStatus('Exporting PDF...', null);
-
-  try {
-    const pdfBlob = await exportSession(session);
-    downloadBlob(pdfBlob, `${buildDocumentSlug(getDocumentTitle(session))}.pdf`);
-    showStatus('Export finished.', 'success');
-  } catch (error) {
-    if (error.status === 401) {
-      await clearAuthSession();
-      showAuthStatus('Session expired. Log in again to continue.', 'error');
-    }
-
-    showStatus(`Unable to export: ${error.message}`, 'error');
-  } finally {
-    updateControlState();
-  }
-});
-
 function renderSession() {
   stepsContainer.innerHTML = '';
+  const filteredSession = session;
 
-  if (!session.length) {
+  if (!filteredSession.length) {
     stepsContainer.innerHTML = isAuthenticated()
       ? '<div class="empty">No clicks captured yet. Start clicking in the page to create documentation steps.</div>'
       : '<div class="empty">Log in to enable capture and build documentation steps.</div>';
     return;
   }
 
-  for (const step of session) {
-    const fragment = stepTemplate.content.cloneNode(true);
-    fragment.querySelector('h2').textContent = `Step ${step.stepNumber}: ${step.title}`;
-    fragment.querySelector('.meta').textContent = `Click on: ${step.title}`;
-
-    const image = fragment.querySelector('img');
-    image.src = step.screenshot;
-    image.alt = `Step ${step.stepNumber} screenshot`;
-
-    stepsContainer.appendChild(fragment);
+  for (const step of filteredSession) {
+    stepsContainer.appendChild(createStepElement(step));
   }
 }
+
+function appendStep(step) {
+  if (!step || session.some((item) => item.id === step.id)) {
+    return;
+  }
+
+  session = [...session, step];
+
+  if (stepsContainer.querySelector('.empty')) {
+    stepsContainer.innerHTML = '';
+  }
+
+  stepsContainer.appendChild(createStepElement(step));
+}
+
+function createStepElement(step) {
+  const fragment = stepTemplate.content.cloneNode(true);
+  const article = fragment.querySelector('.step');
+  article.dataset.stepId = step.id;
+  fragment.querySelector('h2').textContent = step.title;
+  fragment.querySelector('.meta').textContent = step.description || `Step ${step.stepNumber}`;
+  fragment.querySelector('.selector').textContent = step.detail || `Step ${step.stepNumber}`;
+
+  const image = fragment.querySelector('img');
+  image.src = step.screenshot;
+  image.alt = `Step ${step.stepNumber} screenshot`;
+
+  return fragment;
+}
+
+stepsContainer.addEventListener('click', async (event) => {
+  const deleteButton = event.target.closest('.step-delete-button');
+  if (!deleteButton) {
+    return;
+  }
+
+  const stepElement = deleteButton.closest('.step');
+  const stepId = stepElement?.dataset.stepId;
+  if (!stepId) {
+    return;
+  }
+
+  await syncCurrentTabContext({ force: true });
+  if (!currentTabId) {
+    return;
+  }
+
+  postPortMessage({ type: 'DELETE_STEP', tabId: currentTabId, stepId });
+});
 
 function connectPort() {
   if (portConnected) {
@@ -215,15 +340,25 @@ function connectPort() {
   port.onMessage.addListener((message) => {
     // Background signals that a click was blocked because the user is not authenticated
     if (message.type === 'AUTH_REQUIRED') {
+      console.warn(LOG_PREFIX, 'AUTH_REQUIRED');
       showAuthStatus('Log in to enable click capture.', 'error');
+      return;
+    }
+
+    if (message.type === 'STEP_CAPTURED') {
+      if (message.tabId !== currentTabId) return;
+      console.debug(LOG_PREFIX, 'STEP_CAPTURED', { tabId: message.tabId, stepNumber: message.payload?.stepNumber, title: message.payload?.title });
+      appendStep(message.payload);
+      clearTransientStatus();
       return;
     }
 
     if (message.type !== 'SESSION_UPDATED') return;
     if (message.tabId !== currentTabId) return;
+    console.debug(LOG_PREFIX, 'SESSION_UPDATED', { tabId: message.tabId, count: message.payload?.length || 0 });
     session = message.payload;
     renderSession();
-    clearStatus();
+    clearTransientStatus();
   });
 
   port.onDisconnect.addListener(() => {
@@ -255,6 +390,20 @@ function postPortMessage(message) {
   }
 }
 
+async function setCaptureStartingOverlay(tabId, visible) {
+  if (typeof tabId !== 'number') {
+    return;
+  }
+
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: visible ? 'SHOW_CAPTURE_ATTACHING' : 'HIDE_CAPTURE_ATTACHING'
+    });
+  } catch {
+    // Ignore tabs that do not currently have a content script context.
+  }
+}
+
 async function restoreAuthSession() {
   const stored = await chrome.storage.local.get([AUTH_TOKEN_KEY, AUTH_USER_KEY]);
   authToken = stored[AUTH_TOKEN_KEY] || null;
@@ -269,7 +418,7 @@ async function restoreAuthSession() {
     const responseData = await apiFetchJson(ME_ENDPOINT);
     authUser = responseData.user;
     await persistAuthSession();
-    await loadDepartments();
+    await Promise.all([loadDepartments(), loadAccessibleDocuments()]);
     showAuthStatus(`Signed in as ${authUser.email}.`, 'success');
   } catch (error) {
     await clearAuthSession();
@@ -289,30 +438,126 @@ async function clearAuthSession() {
   authToken = null;
   authUser = null;
   availableDepartments = [];
+  availableDocuments = [];
+  pendingAuthReturn = null;
   await chrome.storage.local.remove([AUTH_TOKEN_KEY, AUTH_USER_KEY]);
   updateAuthUi();
 }
 
 function updateAuthUi() {
   const authenticated = isAuthenticated();
+  document.body.classList.toggle('authenticated', authenticated);
   authLoggedOut.hidden = authenticated;
-  authLoggedIn.hidden = !authenticated;
+  appShell.hidden = !authenticated;
+  if (!authenticated) {
+    setCaptureMode(false);
+  } else {
+    launcherView.hidden = isCaptureMode;
+    captureView.hidden = !isCaptureMode;
+  }
   authUserEmail.textContent = authenticated ? authUser?.email || 'Unknown user' : '';
+  authUserInitials.textContent = authenticated ? buildUserInitials(authUser) : 'U';
+  updateAuthPolling();
   updateDepartmentUi();
   updateControlState();
   renderSession();
+  renderDocuments();
 }
 
 function updateControlState() {
   const authenticated = isAuthenticated();
   restartCaptureButton.disabled = !authenticated;
-  clearButton.disabled = !authenticated;
-  saveButton.disabled = !authenticated;
-  exportButton.disabled = !authenticated;
+  clearButton.disabled = !authenticated || !isCaptureMode;
+  saveButton.disabled = !authenticated || !isCaptureMode || !session.length;
 }
 
 function isAuthenticated() {
   return Boolean(authToken && authUser);
+}
+
+function buildUserInitials(user) {
+  const source = user?.name?.trim() || user?.email?.trim() || 'User';
+  return source.charAt(0).toUpperCase();
+}
+
+function updateAuthPolling() {
+  if (isAuthenticated()) {
+    if (authSyncIntervalId) {
+      window.clearInterval(authSyncIntervalId);
+      authSyncIntervalId = null;
+    }
+    return;
+  }
+
+  if (authSyncIntervalId) {
+    return;
+  }
+
+  authSyncIntervalId = window.setInterval(() => {
+    postPortMessage({ type: 'REQUEST_AUTH_SYNC' });
+    void syncAuthFromOpenAppTabs();
+  }, 1500);
+}
+
+async function syncAuthFromOpenAppTabs() {
+  try {
+    const tabs = await chrome.tabs.query({ url: WEB_APP_URL_PATTERNS });
+
+    for (const tab of tabs) {
+      if (typeof tab.id !== 'number') {
+        continue;
+      }
+
+      const payload = await readAuthSessionFromTab(tab.id);
+
+      if (!payload?.token || !payload?.user) {
+        continue;
+      }
+
+      const wasAuthenticated = isAuthenticated();
+      authToken = payload.token;
+      authUser = payload.user;
+      await persistAuthSession();
+      await Promise.all([loadDepartments(), loadAccessibleDocuments()]);
+
+      if (!wasAuthenticated) {
+        showAuthStatus(`Signed in as ${payload.user.email}.`, 'success');
+      }
+
+      return;
+    }
+  } catch {
+    // Ignore polling failures and retry on the next interval.
+  }
+}
+
+async function readAuthSessionFromTab(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        try {
+          const token = window.localStorage.getItem('getdocumented.auth.token');
+          const rawUser = window.localStorage.getItem('getdocumented.auth.user');
+
+          if (!token || !rawUser) {
+            return null;
+          }
+
+          return {
+            token,
+            user: JSON.parse(rawUser)
+          };
+        } catch {
+          return null;
+        }
+      }
+    });
+
+    return results?.[0]?.result || null;
+  } catch {
+    return null;
+  }
 }
 
 async function saveSession(steps) {
@@ -323,16 +568,6 @@ async function saveSession(steps) {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(uploadReadyPayload)
-  });
-}
-
-async function exportSession(steps) {
-  return apiFetchBlob(EXPORT_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(buildDocumentPayload(steps))
   });
 }
 
@@ -348,7 +583,8 @@ async function buildSaveDocumentPayload(steps) {
     title: getDocumentTitle(steps),
     sourceUrl: getDocumentSourceUrl(steps),
     departmentId: getSelectedDepartmentId(),
-    visibility: saveVisibilitySelect?.value || 'public',
+    status: 'draft',
+    visibility: 'public',
     items
   };
 }
@@ -368,6 +604,23 @@ async function loadDepartments() {
   }
 
   updateDepartmentUi();
+}
+
+async function loadAccessibleDocuments() {
+  if (!isAuthenticated()) {
+    availableDocuments = [];
+    renderDocuments();
+    return;
+  }
+
+  try {
+    const responseData = await apiFetchJson(SAVE_ENDPOINT);
+    availableDocuments = Array.isArray(responseData) ? responseData : [];
+  } catch {
+    availableDocuments = [];
+  }
+
+  renderDocuments();
 }
 
 function buildDocumentPayload(steps) {
@@ -440,18 +693,6 @@ async function apiFetchJson(path, init = {}) {
   return response.json();
 }
 
-async function apiFetchBlob(path, init = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, withAuthHeaders(init));
-
-  if (!response.ok) {
-    const error = new Error(await parseApiError(response));
-    error.status = response.status;
-    throw error;
-  }
-
-  return response.blob();
-}
-
 function withAuthHeaders(init) {
   const headers = new Headers(init.headers || {});
 
@@ -465,37 +706,97 @@ function withAuthHeaders(init) {
   };
 }
 
-function updateDepartmentUi() {
-  const canChooseDepartment = isAuthenticated() && !authUser?.departmentId;
-  departmentPicker.hidden = !canChooseDepartment;
+function updateDepartmentUi() {}
 
-  if (!canChooseDepartment) {
-    saveDepartmentSelect.innerHTML = '';
+function setCaptureMode(active) {
+  isCaptureMode = Boolean(active && isAuthenticated());
+  launcherView.hidden = isCaptureMode;
+  captureView.hidden = !isCaptureMode;
+  updateControlState();
+  renderSession();
+}
+
+async function resetCaptureSession() {
+  session = [];
+  renderSession();
+  updateControlState();
+
+  if (!currentTabId) {
     return;
   }
 
-  const options = availableDepartments.length
-    ? availableDepartments
-    : [{ id: '', name: 'Common', isCommon: true }];
+  postPortMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
+}
 
-  saveDepartmentSelect.innerHTML = options
-    .map(
-      (department) =>
-        `<option value="${department.id || ''}">${escapeHtml(department.name || 'Common')}${department.isCommon ? ' (Common)' : ''}</option>`
-    )
-    .join('');
+function renderDocuments() {
+  documentsList.innerHTML = '';
+
+  if (!isAuthenticated()) {
+    documentsList.innerHTML = '<div class="empty">Log in to view documents you can access.</div>';
+    return;
+  }
+
+  const filteredDocuments = availableDocuments.filter(matchesDocumentSearch);
+
+  if (!filteredDocuments.length) {
+    documentsList.innerHTML = availableDocuments.length
+      ? '<div class="empty">No documents match your search.</div>'
+      : '<div class="empty">No published documents are available yet.</div>';
+    return;
+  }
+
+  for (const document of filteredDocuments) {
+    documentsList.appendChild(createDocumentElement(document));
+  }
+}
+
+function matchesDocumentSearch(document) {
+  if (!documentSearchTerm) {
+    return true;
+  }
+
+  const haystack = [document.title, document.status, document.department?.name, document.sourceUrl]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  return haystack.includes(documentSearchTerm);
+}
+
+function createDocumentElement(document) {
+  const fragment = documentTemplate.content.cloneNode(true);
+  fragment.querySelector('h3').textContent = document.title || 'Untitled document';
+  fragment.querySelector('.document-meta').textContent = [document.department?.name || 'All teams', formatStepCount(document.items)]
+    .filter(Boolean)
+    .join(' • ');
+  fragment.querySelector('.document-date').textContent = formatDocumentDate(document.updatedAt);
+  fragment.querySelector('.document-status').textContent = document.status || 'published';
+  return fragment;
+}
+
+function formatStepCount(items) {
+  const count = Array.isArray(items) ? items.length : 0;
+  return `${count} step${count === 1 ? '' : 's'}`;
+}
+
+function formatDocumentDate(value) {
+  if (!value) {
+    return 'Updated recently';
+  }
+
+  try {
+    return `Updated ${new Date(value).toLocaleDateString(undefined, {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    })}`;
+  } catch {
+    return 'Updated recently';
+  }
 }
 
 function getSelectedDepartmentId() {
-  if (!isAuthenticated()) {
-    return null;
-  }
-
-  if (authUser?.departmentId) {
-    return authUser.departmentId;
-  }
-
-  return saveDepartmentSelect.value || null;
+  return authUser?.departmentId || null;
 }
 
 function buildDocumentTitle(steps) {
@@ -517,7 +818,7 @@ function buildDocumentTitle(steps) {
 }
 
 function getDocumentTitle(steps) {
-  return documentTitleInput.value.trim() || buildDocumentTitle(steps);
+  return buildDocumentTitle(steps);
 }
 
 function getDocumentSourceUrl(steps) {
@@ -601,16 +902,43 @@ function clearStatus() {
   showStatus('', null);
 }
 
-function downloadBlob(blob, fileName) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = fileName;
-  link.click();
+function clearTransientStatus() {
+  if (saveStatus.classList.contains('success') || saveStatus.classList.contains('error')) {
+    return;
+  }
 
-  setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, 1000);
+  clearStatus();
+}
+
+function storageKey(tabId) {
+  return `session:${tabId}`;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function restoreSourceTabAfterAuth() {
+  if (!pendingAuthReturn?.sourceTabId) {
+    return;
+  }
+
+  const { sourceTabId, sourceWindowId, authTabId } = pendingAuthReturn;
+  pendingAuthReturn = null;
+
+  try {
+    if (typeof sourceWindowId === 'number') {
+      await chrome.windows.update(sourceWindowId, { focused: true });
+    }
+
+    await chrome.tabs.update(sourceTabId, { active: true });
+
+    if (typeof authTabId === 'number' && authTabId !== sourceTabId) {
+      await chrome.tabs.remove(authTabId);
+    }
+  } catch {
+    // Ignore if the user closed or moved one of the tabs during auth.
+  }
 }
 
 function escapeHtml(value) {

@@ -18,11 +18,12 @@ if (!window.__getdocumentedPageBridgeInstalled) {
     }
   };
 
-  const emitSession = () => {
+  const emitSession = (reason) => {
     window.postMessage(
       {
         source: PAGE_BRIDGE_SOURCE,
         type: PAGE_BRIDGE_EVENT,
+        reason,
         payload: {
           token: window.localStorage.getItem(AUTH_TOKEN_KEY),
           user: readUser(),
@@ -35,14 +36,14 @@ if (!window.__getdocumentedPageBridgeInstalled) {
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data?.type !== PAGE_BRIDGE_REQUEST || event.data?.source !== 'getdocumented-extension') return;
-    emitSession();
+    emitSession('request');
   });
 
   window.addEventListener('storage', (event) => {
     if (event.key === AUTH_TOKEN_KEY || event.key === AUTH_USER_KEY) {
-      emitSession();
+      emitSession('change');
     }
   });
 
-  emitSession();
+  emitSession('init');
 }
