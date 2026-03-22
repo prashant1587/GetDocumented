@@ -1,28 +1,31 @@
-const CLICK_THROTTLE_MS = 250;
-const CHANGE_THROTTLE_MS = 400;
-const AUTH_TOKEN_KEY = 'getdocumented.auth.token';
-const AUTH_USER_KEY = 'getdocumented.auth.user';
-const PAGE_BRIDGE_SOURCE = 'getdocumented-page-bridge';
-const PAGE_BRIDGE_REQUEST_SOURCE = 'getdocumented-extension';
-const PAGE_BRIDGE_REQUEST = 'GETDOCUMENTED_PAGE_BRIDGE_REQUEST';
-const PAGE_BRIDGE_EVENT = 'GETDOCUMENTED_PAGE_BRIDGE_EVENT';
-const AUTH_SESSION_SYNC = 'AUTH_SESSION_SYNC';
-const AUTH_SESSION_CLEAR = 'AUTH_SESSION_CLEAR';
-const LOG_PREFIX = '[GetDocumented:content]';
-const WEB_APP_ORIGINS = new Set([
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'http://localhost:4173',
-  'http://127.0.0.1:4173',
-  'http://localhost:8080',
-  'http://127.0.0.1:8080',
-  'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com',
-  'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com'
-]);
-let lastClickAt = 0;
-let lastChangeAt = 0;
-let extensionContextAvailable = true;
-let lastSyncedToken = null;
+if (!window.__getdocumentedContentInstalled) {
+  window.__getdocumentedContentInstalled = true;
+
+  const CLICK_THROTTLE_MS = 250;
+  const CHANGE_THROTTLE_MS = 400;
+  const AUTH_TOKEN_KEY = 'getdocumented.auth.token';
+  const AUTH_USER_KEY = 'getdocumented.auth.user';
+  const PAGE_BRIDGE_SOURCE = 'getdocumented-page-bridge';
+  const PAGE_BRIDGE_REQUEST_SOURCE = 'getdocumented-extension';
+  const PAGE_BRIDGE_REQUEST = 'GETDOCUMENTED_PAGE_BRIDGE_REQUEST';
+  const PAGE_BRIDGE_EVENT = 'GETDOCUMENTED_PAGE_BRIDGE_EVENT';
+  const AUTH_SESSION_SYNC = 'AUTH_SESSION_SYNC';
+  const AUTH_SESSION_CLEAR = 'AUTH_SESSION_CLEAR';
+  const LOG_PREFIX = '[GetDocumented:content]';
+  const WEB_APP_ORIGINS = new Set([
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:4173',
+    'http://127.0.0.1:4173',
+    'http://localhost:8080',
+    'http://127.0.0.1:8080',
+    'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com',
+    'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com'
+  ]);
+  let lastClickAt = 0;
+  let lastChangeAt = 0;
+  let extensionContextAvailable = true;
+  let lastSyncedToken = null;
 
 window.addEventListener(
   'click',
@@ -530,4 +533,5 @@ async function safeSendRuntimeMessage(message) {
 
 function isExtensionContextInvalidated(error) {
   return error instanceof Error && /Extension context invalidated/i.test(error.message);
+}
 }

@@ -284,6 +284,7 @@ async function setCaptureEnabled(tabId, enabled) {
 
   if (enabled) {
     captureEnabledTabs.add(tabId);
+    await ensureContentScriptInjected(tabId);
   } else {
     captureEnabledTabs.delete(tabId);
   }
@@ -295,6 +296,17 @@ async function setCaptureEnabled(tabId, enabled) {
     });
   } catch {
     // Ignore tabs that do not currently have a content script context.
+  }
+}
+
+async function ensureContentScriptInjected(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['src/content.js']
+    });
+  } catch {
+    // Ignore tabs that cannot be scripted. Existing content-script contexts still work.
   }
 }
 
