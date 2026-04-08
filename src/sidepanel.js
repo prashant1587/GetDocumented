@@ -1,16 +1,4 @@
-const API_BASE_URL = 'http://localhost:3000';
-const WEB_APP_CANDIDATE_BASE_URLS = [
-  'http://localhost:8080',
-  'http://127.0.0.1:8080',
-  'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com',
-  'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com'
-];
-const WEB_APP_URL_PATTERNS = [
-  'http://localhost:8080/*',
-  'http://127.0.0.1:8080/*',
-  'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com/*',
-  'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com/*'
-];
+const { API_BASE_URL, WEB_APP_CANDIDATE_BASE_URLS, WEB_APP_URL_PATTERNS } = GD_CONFIG;
 const LOGIN_ENDPOINT = '/api/auth/login';
 const ME_ENDPOINT = '/api/auth/me';
 const DEPARTMENTS_ENDPOINT = '/api/departments';

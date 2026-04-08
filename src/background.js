@@ -1,20 +1,18 @@
+importScripts('./config.js');
+
 const ACTIVE_SESSION_KEY = 'session:active';
 const sessionsByTab = new Map();
 const panelPorts = new Map();
 const captureEnabledTabs = new Set();
-const pendingSessionFlush = new Set(); // tabs with clicks captured before panel connected
+const pendingSessionFlush = new Set();
 let captureSessionActive = false;
 let activeCaptureTabId = null;
 const AUTH_TOKEN_KEY = 'authToken';
 const AUTH_USER_KEY = 'authUser';
 const CAPTURE_ACROSS_TABS_KEY = 'captureAcrossTabs';
 const LOG_PREFIX = '[GetDocumented:background]';
-const WEB_APP_URL_PATTERNS = [
-  'http://localhost:8080/*',
-  'http://127.0.0.1:8080/*',
-  'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com/*',
-  'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com/*'
-];
+const { WEB_APP_URL_PATTERNS } = GD_CONFIG;
+
 
 const ACTIONS = {
   REQUEST_SESSION: 'REQUEST_SESSION',
