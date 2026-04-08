@@ -1,15 +1,15 @@
+const ACTIVE_SESSION_KEY = 'session:active';
 const sessionsByTab = new Map();
 const panelPorts = new Map();
 const captureEnabledTabs = new Set();
 const pendingSessionFlush = new Set(); // tabs with clicks captured before panel connected
+let captureSessionActive = false;
+let activeCaptureTabId = null;
 const AUTH_TOKEN_KEY = 'authToken';
 const AUTH_USER_KEY = 'authUser';
+const CAPTURE_ACROSS_TABS_KEY = 'captureAcrossTabs';
 const LOG_PREFIX = '[GetDocumented:background]';
 const WEB_APP_URL_PATTERNS = [
-  'http://localhost:5173/*',
-  'http://127.0.0.1:5173/*',
-  'http://localhost:4173/*',
-  'http://127.0.0.1:4173/*',
   'http://localhost:8080/*',
   'http://127.0.0.1:8080/*',
   'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com/*',
@@ -24,6 +24,8 @@ const ACTIONS = {
   SESSION_UPDATED: 'SESSION_UPDATED',
   STEP_CAPTURED: 'STEP_CAPTURED',
   DELETE_STEP: 'DELETE_STEP',
+  START_CAPTURE_SESSION: 'START_CAPTURE_SESSION',
+  STOP_CAPTURE_SESSION: 'STOP_CAPTURE_SESSION',
   REQUEST_AUTH_SYNC: 'REQUEST_AUTH_SYNC',
   AUTH_SESSION_SYNC: 'AUTH_SESSION_SYNC',
   AUTH_SESSION_CLEAR: 'AUTH_SESSION_CLEAR'
@@ -31,6 +33,7 @@ const ACTIONS = {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  void ensureCaptureAcrossTabsDefault();
 });
 
 chrome.action.onClicked.addListener(async (tab) => {
@@ -53,13 +56,16 @@ chrome.runtime.onConnect.addListener((port) => {
 
       if (typeof previousTabId === 'number' && previousTabId !== tabId) {
         panelPorts.delete(previousTabId);
-        await setCaptureEnabled(previousTabId, false);
+        if (captureSessionActive && previousTabId !== activeCaptureTabId) {
+          await setCaptureEnabled(previousTabId, false);
+        }
       }
 
       panelPorts.set(tabId, port);
-      await setCaptureEnabled(tabId, true);
+      if (captureSessionActive && activeCaptureTabId === tabId) {
+        await setCaptureEnabled(tabId, true);
+      }
 
-      // Flush any clicks that arrived before the panel finished connecting
       void sendSessionUpdate(tabId);
       pendingSessionFlush.delete(tabId);
 
@@ -75,25 +81,69 @@ chrome.runtime.onConnect.addListener((port) => {
 
     if (message.type === 'CLEAR_SESSION') {
       console.debug(LOG_PREFIX, 'CLEAR_SESSION', message.tabId);
-      if (typeof message.tabId !== 'number') return;
-      sessionsByTab.set(message.tabId, []);
-      await chrome.storage.local.set({ [storageKey(message.tabId)]: [] });
-      void sendSessionUpdate(message.tabId);
+      await clearSession();
+      if (typeof tabId === 'number') {
+        void sendSessionUpdate(tabId);
+      }
       return;
     }
 
     if (message.type === ACTIONS.DELETE_STEP) {
       console.debug(LOG_PREFIX, 'DELETE_STEP', message.tabId, message.stepId);
-      if (typeof message.tabId !== 'number' || !message.stepId) return;
-      await deleteStep(message.tabId, message.stepId);
+      if (!message.stepId) return;
+      await deleteStep(message.stepId);
+      if (typeof tabId === 'number') {
+        void sendSessionUpdate(tabId);
+      }
+      return;
+    }
+
+    if (message.type === ACTIONS.START_CAPTURE_SESSION) {
+      console.debug(LOG_PREFIX, 'START_CAPTURE_SESSION', message.tabId);
+      if (typeof message.tabId !== 'number') return;
+      const targetTab = await chrome.tabs.get(message.tabId).catch(() => null);
+      const captureCompatibilityError = getCaptureCompatibilityError(targetTab);
+      if (captureCompatibilityError) {
+        captureSessionActive = false;
+        activeCaptureTabId = null;
+        try {
+          port.postMessage({
+            type: 'CAPTURE_ERROR',
+            tabId: message.tabId,
+            message: captureCompatibilityError
+          });
+        } catch {
+          panelPorts.delete(message.tabId);
+        }
+        return;
+      }
+      if (typeof message.captureAcrossTabs === 'boolean') {
+        await chrome.storage.local.set({ [CAPTURE_ACROSS_TABS_KEY]: message.captureAcrossTabs });
+      }
+      captureSessionActive = true;
+      activeCaptureTabId = message.tabId;
+      await clearSession();
+      await setCaptureEnabled(message.tabId, true);
       void sendSessionUpdate(message.tabId);
+      return;
+    }
+
+    if (message.type === ACTIONS.STOP_CAPTURE_SESSION) {
+      console.debug(LOG_PREFIX, 'STOP_CAPTURE_SESSION', message.tabId);
+      captureSessionActive = false;
+      if (typeof activeCaptureTabId === 'number') {
+        await setCaptureEnabled(activeCaptureTabId, false);
+      }
+      activeCaptureTabId = null;
     }
   });
 
   port.onDisconnect.addListener(() => {
     if (typeof tabId === 'number') {
       panelPorts.delete(tabId);
-      void setCaptureEnabled(tabId, false);
+      captureSessionActive = false;
+      activeCaptureTabId = null;
+      void disableAllCaptureTabs();
     }
   });
 });
@@ -122,7 +172,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  if (!captureEnabledTabs.has(sender.tab.id)) {
+  if (!captureSessionActive || !captureEnabledTabs.has(sender.tab.id) || sender.tab.id !== activeCaptureTabId) {
     console.debug(LOG_PREFIX, 'ignoring capture for inactive tab', { tabId: sender.tab.id });
     sendResponse({ ok: true, ignored: true });
     return false;
@@ -144,11 +194,39 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   panelPorts.delete(tabId);
   captureEnabledTabs.delete(tabId);
   pendingSessionFlush.delete(tabId);
+  if (tabId === activeCaptureTabId) {
+    activeCaptureTabId = null;
+  }
+});
+
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  if (!captureSessionActive || typeof tabId !== 'number' || tabId === activeCaptureTabId) {
+    return;
+  }
+
+  if (!(await isCaptureAcrossTabsEnabled())) {
+    return;
+  }
+
+  const previousTabId = activeCaptureTabId;
+  activeCaptureTabId = tabId;
+
+  if (typeof previousTabId === 'number') {
+    await setCaptureEnabled(previousTabId, false);
+  }
+
+  await setCaptureEnabled(tabId, true);
+  await appendNavigationStep(tabId);
 });
 
 async function handleInteractionCapture(tab, payload) {
   const tabId = tab.id;
   if (!tabId) return;
+  const captureCompatibilityError = getCaptureCompatibilityError(tab);
+
+  if (captureCompatibilityError) {
+    throw new Error(captureCompatibilityError);
+  }
 
   const stored = await chrome.storage.local.get(AUTH_TOKEN_KEY);
 
@@ -182,7 +260,7 @@ async function handleInteractionCapture(tab, payload) {
     await clearCaptureHighlight(tabId);
   }
 
-  const session = await getSession(tabId);
+  const session = await getSession();
   const stepNumber = session.length + 1;
 
   const clickEntry = {
@@ -202,8 +280,8 @@ async function handleInteractionCapture(tab, payload) {
   };
 
   session.push(clickEntry);
-  sessionsByTab.set(tabId, session);
-  await chrome.storage.local.set({ [storageKey(tabId)]: session });
+  sessionsByTab.set(ACTIVE_SESSION_KEY, session);
+  await chrome.storage.local.set({ [storageKey()]: session });
   console.debug(LOG_PREFIX, 'step stored', { tabId, stepNumber, sessionSize: session.length });
 
   if (!panelPorts.has(tabId)) {
@@ -214,20 +292,20 @@ async function handleInteractionCapture(tab, payload) {
   }
 }
 
-async function getSession(tabId) {
-  if (sessionsByTab.has(tabId)) {
-    return [...sessionsByTab.get(tabId)];
+async function getSession() {
+  if (sessionsByTab.has(ACTIVE_SESSION_KEY)) {
+    return [...sessionsByTab.get(ACTIVE_SESSION_KEY)];
   }
 
-  const key = storageKey(tabId);
+  const key = storageKey();
   const stored = await chrome.storage.local.get(key);
   const session = Array.isArray(stored[key]) ? stored[key] : [];
-  sessionsByTab.set(tabId, session);
+  sessionsByTab.set(ACTIVE_SESSION_KEY, session);
   return [...session];
 }
 
-async function deleteStep(tabId, stepId) {
-  const currentSession = await getSession(tabId);
+async function deleteStep(stepId) {
+  const currentSession = await getSession();
   const nextSession = currentSession
     .filter((step) => step.id !== stepId)
     .map((step, index) => ({
@@ -235,15 +313,15 @@ async function deleteStep(tabId, stepId) {
       stepNumber: index + 1
     }));
 
-  sessionsByTab.set(tabId, nextSession);
-  await chrome.storage.local.set({ [storageKey(tabId)]: nextSession });
+  sessionsByTab.set(ACTIVE_SESSION_KEY, nextSession);
+  await chrome.storage.local.set({ [storageKey()]: nextSession });
 }
 
 async function sendSessionUpdate(tabId) {
   const port = panelPorts.get(tabId);
   if (!port) return;
 
-  const session = await getSession(tabId);
+  const session = await getSession();
 
   try {
     console.debug(LOG_PREFIX, 'SESSION_UPDATED', { tabId, count: session.length });
@@ -273,8 +351,67 @@ function sendStepUpdate(tabId, step) {
   }
 }
 
-function storageKey(tabId) {
-  return `session:${tabId}`;
+function storageKey() {
+  return ACTIVE_SESSION_KEY;
+}
+
+async function clearSession() {
+  sessionsByTab.set(ACTIVE_SESSION_KEY, []);
+  await chrome.storage.local.set({ [storageKey()]: [] });
+}
+
+async function disableAllCaptureTabs() {
+  const enabledTabIds = [...captureEnabledTabs];
+  await Promise.all(enabledTabIds.map((tabId) => setCaptureEnabled(tabId, false)));
+}
+
+async function appendNavigationStep(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab?.windowId || getCaptureCompatibilityError(tab)) {
+      return;
+    }
+
+    const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    const session = await getSession();
+    const stepNumber = session.length + 1;
+    const title = buildNavigationTitle(tab);
+
+    const entry = {
+      id: crypto.randomUUID(),
+      stepNumber,
+      title: `Navigate to ${title}`,
+      description: `Switch to the ${title} tab.`,
+      detail: tab.url || title,
+      actionType: 'navigate-tab',
+      selector: null,
+      direction: 'tab-switch',
+      clickPosition: null,
+      viewport: null,
+      pageUrl: tab.url || null,
+      createdAt: new Date().toISOString(),
+      screenshot
+    };
+
+    session.push(entry);
+    sessionsByTab.set(ACTIVE_SESSION_KEY, session);
+    await chrome.storage.local.set({ [storageKey()]: session });
+    void sendSessionUpdate(tabId);
+  } catch {
+    // Ignore tab navigation capture errors.
+  }
+}
+
+function buildNavigationTitle(tab) {
+  if (tab.title?.trim()) {
+    return tab.title.trim();
+  }
+
+  try {
+    return new URL(tab.url).hostname;
+  } catch {
+    return 'next';
+  }
 }
 
 async function setCaptureEnabled(tabId, enabled) {
@@ -283,6 +420,15 @@ async function setCaptureEnabled(tabId, enabled) {
   }
 
   if (enabled) {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (getCaptureCompatibilityError(tab)) {
+      captureEnabledTabs.delete(tabId);
+      return;
+    }
+
+    // Mark the tab as capture-enabled *before* the async injection so that any
+    // clicks the already-running content script fires during injection are not
+    // silently dropped by the captureEnabledTabs guard in handleInteractionCapture.
     captureEnabledTabs.add(tabId);
     await ensureContentScriptInjected(tabId);
   } else {
@@ -329,6 +475,18 @@ async function requestAuthSyncForAllTabs() {
         await syncAuthSessionFromTab(tab.id);
       })
   );
+}
+
+async function isCaptureAcrossTabsEnabled() {
+  const stored = await chrome.storage.local.get(CAPTURE_ACROSS_TABS_KEY);
+  return Boolean(stored[CAPTURE_ACROSS_TABS_KEY]);
+}
+
+async function ensureCaptureAcrossTabsDefault() {
+  const stored = await chrome.storage.local.get(CAPTURE_ACROSS_TABS_KEY);
+  if (typeof stored[CAPTURE_ACROSS_TABS_KEY] === 'undefined') {
+    await chrome.storage.local.set({ [CAPTURE_ACROSS_TABS_KEY]: false });
+  }
 }
 
 async function syncAuthSession(payload) {
@@ -437,4 +595,26 @@ async function clearCaptureHighlight(tabId) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getCaptureCompatibilityError(tab) {
+  if (!tab?.id || !tab?.windowId) {
+    return 'Unable to identify the active tab.';
+  }
+
+  const rawUrl = typeof tab.url === 'string' ? tab.url.trim() : '';
+  if (!rawUrl) {
+    return 'Capture is unavailable until this tab finishes loading a website.';
+  }
+
+  try {
+    const { protocol } = new URL(rawUrl);
+    if (protocol === 'http:' || protocol === 'https:') {
+      return null;
+    }
+  } catch {
+    return 'Capture works only on regular website tabs.';
+  }
+
+  return 'Capture works only on regular http or https pages.';
 }

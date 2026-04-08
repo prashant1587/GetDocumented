@@ -1,10 +1,11 @@
-const API_BASE_URL = 'http://localhost:8080';
-const WEB_APP_BASE_URL = 'http://localhost:8080';
+const API_BASE_URL = 'http://localhost:3000';
+const WEB_APP_CANDIDATE_BASE_URLS = [
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+  'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com',
+  'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com'
+];
 const WEB_APP_URL_PATTERNS = [
-  'http://localhost:5173/*',
-  'http://127.0.0.1:5173/*',
-  'http://localhost:4173/*',
-  'http://127.0.0.1:4173/*',
   'http://localhost:8080/*',
   'http://127.0.0.1:8080/*',
   'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com/*',
@@ -18,6 +19,8 @@ const EXPORT_ENDPOINT = '/api/documents/export/pdf';
 const PRESIGNED_UPLOAD_ENDPOINT = '/api/documents/uploads/presigned-url';
 const AUTH_TOKEN_KEY = 'authToken';
 const AUTH_USER_KEY = 'authUser';
+const ACTIVE_SESSION_KEY = 'session:active';
+const CAPTURE_ACROSS_TABS_KEY = 'captureAcrossTabs';
 const LOG_PREFIX = '[GetDocumented:sidepanel]';
 
 const stepsContainer = document.getElementById('steps');
@@ -37,6 +40,9 @@ const authUserInitials = document.getElementById('authUserInitials');
 const authStatus = document.getElementById('authStatus');
 const openLoginButton = document.getElementById('openLoginButton');
 const logoutButton = document.getElementById('logoutButton');
+const settingsButton = document.getElementById('settingsButton');
+const settingsPanel = document.getElementById('settingsPanel');
+const captureAcrossTabsToggle = document.getElementById('captureAcrossTabsToggle');
 const documentSearchInput = document.getElementById('documentSearch');
 const START_CAPTURE_ATTACH_DELAY_MS = 3000;
 
@@ -52,6 +58,7 @@ let documentSearchTerm = '';
 let authSyncIntervalId = null;
 let pendingAuthReturn = null;
 let isCaptureMode = false;
+let captureAcrossTabs = false;
 
 init();
 
@@ -80,12 +87,17 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     return;
   }
 
-  const sessionKey = currentTabId ? storageKey(currentTabId) : null;
+  const sessionKey = storageKey();
   if (sessionKey && changes[sessionKey]) {
     session = Array.isArray(changes[sessionKey].newValue) ? changes[sessionKey].newValue : [];
     console.debug(LOG_PREFIX, 'session storage updated', { tabId: currentTabId, count: session.length });
     renderSession();
     updateControlState();
+  }
+
+  if (changes[CAPTURE_ACROSS_TABS_KEY]) {
+    captureAcrossTabs = Boolean(changes[CAPTURE_ACROSS_TABS_KEY].newValue);
+    captureAcrossTabsToggle.checked = captureAcrossTabs;
   }
 
   if (!changes[AUTH_TOKEN_KEY] && !changes[AUTH_USER_KEY]) {
@@ -129,6 +141,7 @@ async function init() {
     return;
   }
 
+  await restoreCaptureSettings();
   await restoreAuthSession();
   connectPort();
   updateAuthPolling();
@@ -147,7 +160,9 @@ async function syncCurrentTabContext({ force = false } = {}) {
   }
 
   currentTabId = nextTabId;
-  session = [];
+  if (!isCaptureMode) {
+    session = [];
+  }
   console.debug(LOG_PREFIX, 'syncCurrentTabContext', { currentTabId });
   renderSession();
   postPortMessage({ type: 'REQUEST_SESSION', tabId: currentTabId });
@@ -158,8 +173,9 @@ async function syncCurrentTabContext({ force = false } = {}) {
 openLoginButton.addEventListener('click', async () => {
   try {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const webAppBaseUrl = await resolveWebAppBaseUrl();
     const createdTab = await chrome.tabs.create({
-      url: `${WEB_APP_BASE_URL}/login?extension=1`
+      url: `${webAppBaseUrl}/login?extension=1`
     });
     pendingAuthReturn = {
       sourceTabId: activeTab?.id ?? null,
@@ -177,8 +193,32 @@ logoutButton.addEventListener('click', async () => {
   showAuthStatus('Logged out. Capture is disabled until you sign in again.', 'success');
 });
 
+settingsButton.addEventListener('click', () => {
+  const nextHidden = !settingsPanel.hidden;
+  settingsPanel.hidden = nextHidden;
+  settingsButton.setAttribute('aria-expanded', String(!nextHidden));
+});
+
+captureAcrossTabsToggle.addEventListener('change', async (event) => {
+  captureAcrossTabs = Boolean(event.target.checked);
+  await chrome.storage.local.set({ [CAPTURE_ACROSS_TABS_KEY]: captureAcrossTabs });
+});
+
+document.addEventListener('click', (event) => {
+  if (settingsPanel.hidden) {
+    return;
+  }
+
+  if (settingsPanel.contains(event.target) || settingsButton.contains(event.target)) {
+    return;
+  }
+
+  settingsPanel.hidden = true;
+  settingsButton.setAttribute('aria-expanded', 'false');
+});
+
 clearButton.addEventListener('click', async () => {
-  await syncCurrentTabContext({ force: true });
+  await stopCaptureSession();
   await resetCaptureSession();
   setCaptureMode(false);
 });
@@ -202,22 +242,37 @@ restartCaptureButton.addEventListener('click', async () => {
     return;
   }
 
-  setCaptureMode(true);
-  await setCaptureStartingOverlay(tabId, true);
-  showStatus('Starting capture...', null);
-
   try {
+    const captureCompatibilityError = getCaptureCompatibilityError(activeTab);
+    if (captureCompatibilityError) {
+      showStatus(captureCompatibilityError, 'error');
+      return;
+    }
+
+    setCaptureMode(true);
+    await setCaptureStartingOverlay(tabId, true);
+    showStatus('Starting capture...', null);
     await delay(START_CAPTURE_ATTACH_DELAY_MS);
     await syncCurrentTabContext({ force: true });
 
     if (!currentTabId) {
+      setCaptureMode(false);
       showStatus('Unable to identify active tab.', 'error');
       return;
     }
 
-    await resetCaptureSession();
+    const currentTab = await chrome.tabs.get(currentTabId);
+    const currentTabCompatibilityError = getCaptureCompatibilityError(currentTab);
+    if (currentTabCompatibilityError) {
+      showStatus(currentTabCompatibilityError, 'error');
+      setCaptureMode(false);
+      return;
+    }
+
+    postPortMessage({ type: 'START_CAPTURE_SESSION', tabId: currentTabId, captureAcrossTabs });
     showStatus('Capture restarted. Your next click will become step 1.', 'success');
   } catch (error) {
+    setCaptureMode(false);
     showStatus(`Unable to start capture: ${error.message}`, 'error');
   } finally {
     await setCaptureStartingOverlay(tabId, false);
@@ -240,11 +295,13 @@ saveButton.addEventListener('click', async () => {
 
   try {
     const savedDocument = await saveSession(session);
+    const webAppBaseUrl = await resolveWebAppBaseUrl();
+    await stopCaptureSession();
     await resetCaptureSession();
     setCaptureMode(false);
     await loadAccessibleDocuments();
     await chrome.tabs.create({
-      url: `${WEB_APP_BASE_URL}/documents/${savedDocument.id}?edit=1`
+      url: `${webAppBaseUrl}/documents/${savedDocument.id}?edit=1`
     });
     showStatus('Draft opened in the web editor. Review, edit, and publish from there.', 'success');
   } catch (error) {
@@ -349,6 +406,13 @@ function connectPort() {
       return;
     }
 
+    if (message.type === 'CAPTURE_ERROR') {
+      if (message.tabId !== currentTabId) return;
+      setCaptureMode(false);
+      showStatus(message.message || 'Unable to start capture on this tab.', 'error');
+      return;
+    }
+
     if (message.type === 'STEP_CAPTURED') {
       if (message.tabId !== currentTabId) return;
       console.debug(LOG_PREFIX, 'STEP_CAPTURED', { tabId: message.tabId, stepNumber: message.payload?.stepNumber, title: message.payload?.title });
@@ -401,6 +465,22 @@ async function setCaptureStartingOverlay(tabId, visible) {
   }
 
   try {
+    // On first install the content script may not yet be running in this tab.
+    // Inject it proactively so the overlay message always has a recipient.
+    if (visible) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['src/content.js']
+        });
+        // Give the freshly-injected script a tick to finish installing its listeners
+        // before we fire the message at it.
+        await delay(60);
+      } catch {
+        // Already injected or tab cannot be scripted — proceed anyway.
+      }
+    }
+
     await chrome.tabs.sendMessage(tabId, {
       type: visible ? 'SHOW_CAPTURE_ATTACHING' : 'HIDE_CAPTURE_ATTACHING'
     });
@@ -429,6 +509,12 @@ async function restoreAuthSession() {
     await clearAuthSession();
     showAuthStatus(`Log in to enable capture. ${error.message}`, 'error');
   }
+}
+
+async function restoreCaptureSettings() {
+  const stored = await chrome.storage.local.get(CAPTURE_ACROSS_TABS_KEY);
+  captureAcrossTabs = Boolean(stored[CAPTURE_ACROSS_TABS_KEY]);
+  captureAcrossTabsToggle.checked = captureAcrossTabs;
 }
 
 async function persistAuthSession() {
@@ -483,6 +569,28 @@ function isAuthenticated() {
 function buildUserInitials(user) {
   const source = user?.name?.trim() || user?.email?.trim() || 'User';
   return source.charAt(0).toUpperCase();
+}
+
+function getCaptureCompatibilityError(tab) {
+  if (!tab?.id) {
+    return 'Unable to identify the active tab.';
+  }
+
+  const rawUrl = typeof tab.url === 'string' ? tab.url.trim() : '';
+  if (!rawUrl) {
+    return 'Capture is unavailable until this tab finishes loading a website.';
+  }
+
+  try {
+    const { protocol } = new URL(rawUrl);
+    if (protocol === 'http:' || protocol === 'https:') {
+      return null;
+    }
+  } catch {
+    return 'Capture works only on regular website tabs.';
+  }
+
+  return 'Capture works only on regular http or https pages.';
 }
 
 function updateAuthPolling() {
@@ -563,6 +671,34 @@ async function readAuthSessionFromTab(tabId) {
   } catch {
     return null;
   }
+}
+
+async function resolveWebAppBaseUrl() {
+  try {
+    const tabs = await chrome.tabs.query({ url: WEB_APP_URL_PATTERNS });
+
+    for (const candidateBaseUrl of WEB_APP_CANDIDATE_BASE_URLS) {
+      const matchingTab = tabs.find((tab) => {
+        if (typeof tab.url !== 'string') {
+          return false;
+        }
+
+        try {
+          return new URL(tab.url).origin === candidateBaseUrl;
+        } catch {
+          return false;
+        }
+      });
+
+      if (matchingTab) {
+        return candidateBaseUrl;
+      }
+    }
+  } catch {
+    // Fall through to the default local web app origin.
+  }
+
+  return WEB_APP_CANDIDATE_BASE_URLS[0];
 }
 
 async function saveSession(steps) {
@@ -731,6 +867,14 @@ async function resetCaptureSession() {
   }
 
   postPortMessage({ type: 'CLEAR_SESSION', tabId: currentTabId });
+}
+
+async function stopCaptureSession() {
+  if (!currentTabId) {
+    return;
+  }
+
+  postPortMessage({ type: 'STOP_CAPTURE_SESSION', tabId: currentTabId });
 }
 
 function renderDocuments() {
@@ -915,8 +1059,8 @@ function clearTransientStatus() {
   clearStatus();
 }
 
-function storageKey(tabId) {
-  return `session:${tabId}`;
+function storageKey() {
+  return ACTIVE_SESSION_KEY;
 }
 
 function delay(ms) {
