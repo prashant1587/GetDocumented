@@ -10,10 +10,6 @@ const AUTH_USER_KEY = 'authUser';
 const CAPTURE_ACROSS_TABS_KEY = 'captureAcrossTabs';
 const LOG_PREFIX = '[GetDocumented:background]';
 const WEB_APP_URL_PATTERNS = [
-  'http://localhost:5173/*',
-  'http://127.0.0.1:5173/*',
-  'http://localhost:4173/*',
-  'http://127.0.0.1:4173/*',
   'http://localhost:8080/*',
   'http://127.0.0.1:8080/*',
   'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com/*',
@@ -105,6 +101,22 @@ chrome.runtime.onConnect.addListener((port) => {
     if (message.type === ACTIONS.START_CAPTURE_SESSION) {
       console.debug(LOG_PREFIX, 'START_CAPTURE_SESSION', message.tabId);
       if (typeof message.tabId !== 'number') return;
+      const targetTab = await chrome.tabs.get(message.tabId).catch(() => null);
+      const captureCompatibilityError = getCaptureCompatibilityError(targetTab);
+      if (captureCompatibilityError) {
+        captureSessionActive = false;
+        activeCaptureTabId = null;
+        try {
+          port.postMessage({
+            type: 'CAPTURE_ERROR',
+            tabId: message.tabId,
+            message: captureCompatibilityError
+          });
+        } catch {
+          panelPorts.delete(message.tabId);
+        }
+        return;
+      }
       if (typeof message.captureAcrossTabs === 'boolean') {
         await chrome.storage.local.set({ [CAPTURE_ACROSS_TABS_KEY]: message.captureAcrossTabs });
       }
@@ -210,6 +222,11 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
 async function handleInteractionCapture(tab, payload) {
   const tabId = tab.id;
   if (!tabId) return;
+  const captureCompatibilityError = getCaptureCompatibilityError(tab);
+
+  if (captureCompatibilityError) {
+    throw new Error(captureCompatibilityError);
+  }
 
   const stored = await chrome.storage.local.get(AUTH_TOKEN_KEY);
 
@@ -351,7 +368,7 @@ async function disableAllCaptureTabs() {
 async function appendNavigationStep(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
-    if (!tab?.windowId) {
+    if (!tab?.windowId || getCaptureCompatibilityError(tab)) {
       return;
     }
 
@@ -403,6 +420,12 @@ async function setCaptureEnabled(tabId, enabled) {
   }
 
   if (enabled) {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (getCaptureCompatibilityError(tab)) {
+      captureEnabledTabs.delete(tabId);
+      return;
+    }
+
     // Mark the tab as capture-enabled *before* the async injection so that any
     // clicks the already-running content script fires during injection are not
     // silently dropped by the captureEnabledTabs guard in handleInteractionCapture.
@@ -572,4 +595,26 @@ async function clearCaptureHighlight(tabId) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getCaptureCompatibilityError(tab) {
+  if (!tab?.id || !tab?.windowId) {
+    return 'Unable to identify the active tab.';
+  }
+
+  const rawUrl = typeof tab.url === 'string' ? tab.url.trim() : '';
+  if (!rawUrl) {
+    return 'Capture is unavailable until this tab finishes loading a website.';
+  }
+
+  try {
+    const { protocol } = new URL(rawUrl);
+    if (protocol === 'http:' || protocol === 'https:') {
+      return null;
+    }
+  } catch {
+    return 'Capture works only on regular website tabs.';
+  }
+
+  return 'Capture works only on regular http or https pages.';
 }

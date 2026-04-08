@@ -1,10 +1,11 @@
-const API_BASE_URL = 'http://localhost:8080';
-const WEB_APP_BASE_URL = 'http://localhost:8080';
+const API_BASE_URL = 'http://localhost:3000';
+const WEB_APP_CANDIDATE_BASE_URLS = [
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+  'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com',
+  'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com'
+];
 const WEB_APP_URL_PATTERNS = [
-  'http://localhost:5173/*',
-  'http://127.0.0.1:5173/*',
-  'http://localhost:4173/*',
-  'http://127.0.0.1:4173/*',
   'http://localhost:8080/*',
   'http://127.0.0.1:8080/*',
   'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com/*',
@@ -172,8 +173,9 @@ async function syncCurrentTabContext({ force = false } = {}) {
 openLoginButton.addEventListener('click', async () => {
   try {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const webAppBaseUrl = await resolveWebAppBaseUrl();
     const createdTab = await chrome.tabs.create({
-      url: `${WEB_APP_BASE_URL}/login?extension=1`
+      url: `${webAppBaseUrl}/login?extension=1`
     });
     pendingAuthReturn = {
       sourceTabId: activeTab?.id ?? null,
@@ -240,22 +242,37 @@ restartCaptureButton.addEventListener('click', async () => {
     return;
   }
 
-  setCaptureMode(true);
-  await setCaptureStartingOverlay(tabId, true);
-  showStatus('Starting capture...', null);
-
   try {
+    const captureCompatibilityError = getCaptureCompatibilityError(activeTab);
+    if (captureCompatibilityError) {
+      showStatus(captureCompatibilityError, 'error');
+      return;
+    }
+
+    setCaptureMode(true);
+    await setCaptureStartingOverlay(tabId, true);
+    showStatus('Starting capture...', null);
     await delay(START_CAPTURE_ATTACH_DELAY_MS);
     await syncCurrentTabContext({ force: true });
 
     if (!currentTabId) {
+      setCaptureMode(false);
       showStatus('Unable to identify active tab.', 'error');
+      return;
+    }
+
+    const currentTab = await chrome.tabs.get(currentTabId);
+    const currentTabCompatibilityError = getCaptureCompatibilityError(currentTab);
+    if (currentTabCompatibilityError) {
+      showStatus(currentTabCompatibilityError, 'error');
+      setCaptureMode(false);
       return;
     }
 
     postPortMessage({ type: 'START_CAPTURE_SESSION', tabId: currentTabId, captureAcrossTabs });
     showStatus('Capture restarted. Your next click will become step 1.', 'success');
   } catch (error) {
+    setCaptureMode(false);
     showStatus(`Unable to start capture: ${error.message}`, 'error');
   } finally {
     await setCaptureStartingOverlay(tabId, false);
@@ -278,12 +295,13 @@ saveButton.addEventListener('click', async () => {
 
   try {
     const savedDocument = await saveSession(session);
+    const webAppBaseUrl = await resolveWebAppBaseUrl();
     await stopCaptureSession();
     await resetCaptureSession();
     setCaptureMode(false);
     await loadAccessibleDocuments();
     await chrome.tabs.create({
-      url: `${WEB_APP_BASE_URL}/documents/${savedDocument.id}?edit=1`
+      url: `${webAppBaseUrl}/documents/${savedDocument.id}?edit=1`
     });
     showStatus('Draft opened in the web editor. Review, edit, and publish from there.', 'success');
   } catch (error) {
@@ -385,6 +403,13 @@ function connectPort() {
     if (message.type === 'AUTH_REQUIRED') {
       console.warn(LOG_PREFIX, 'AUTH_REQUIRED');
       showAuthStatus('Log in to enable click capture.', 'error');
+      return;
+    }
+
+    if (message.type === 'CAPTURE_ERROR') {
+      if (message.tabId !== currentTabId) return;
+      setCaptureMode(false);
+      showStatus(message.message || 'Unable to start capture on this tab.', 'error');
       return;
     }
 
@@ -546,6 +571,28 @@ function buildUserInitials(user) {
   return source.charAt(0).toUpperCase();
 }
 
+function getCaptureCompatibilityError(tab) {
+  if (!tab?.id) {
+    return 'Unable to identify the active tab.';
+  }
+
+  const rawUrl = typeof tab.url === 'string' ? tab.url.trim() : '';
+  if (!rawUrl) {
+    return 'Capture is unavailable until this tab finishes loading a website.';
+  }
+
+  try {
+    const { protocol } = new URL(rawUrl);
+    if (protocol === 'http:' || protocol === 'https:') {
+      return null;
+    }
+  } catch {
+    return 'Capture works only on regular website tabs.';
+  }
+
+  return 'Capture works only on regular http or https pages.';
+}
+
 function updateAuthPolling() {
   if (isAuthenticated()) {
     if (authSyncIntervalId) {
@@ -624,6 +671,34 @@ async function readAuthSessionFromTab(tabId) {
   } catch {
     return null;
   }
+}
+
+async function resolveWebAppBaseUrl() {
+  try {
+    const tabs = await chrome.tabs.query({ url: WEB_APP_URL_PATTERNS });
+
+    for (const candidateBaseUrl of WEB_APP_CANDIDATE_BASE_URLS) {
+      const matchingTab = tabs.find((tab) => {
+        if (typeof tab.url !== 'string') {
+          return false;
+        }
+
+        try {
+          return new URL(tab.url).origin === candidateBaseUrl;
+        } catch {
+          return false;
+        }
+      });
+
+      if (matchingTab) {
+        return candidateBaseUrl;
+      }
+    }
+  } catch {
+    // Fall through to the default local web app origin.
+  }
+
+  return WEB_APP_CANDIDATE_BASE_URLS[0];
 }
 
 async function saveSession(steps) {

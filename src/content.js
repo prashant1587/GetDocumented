@@ -13,10 +13,6 @@ if (!window.__getdocumentedContentInstalled) {
   const AUTH_SESSION_CLEAR = 'AUTH_SESSION_CLEAR';
   const LOG_PREFIX = '[GetDocumented:content]';
   const WEB_APP_ORIGINS = new Set([
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    'http://localhost:4173',
-    'http://127.0.0.1:4173',
     'http://localhost:8080',
     'http://127.0.0.1:8080',
     'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com',
