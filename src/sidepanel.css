@@ -429,3 +429,45 @@ button:disabled {
   padding: 1rem;
   background: #ffffff;
 }
+
+.save-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(3px);
+}
+
+.save-overlay[hidden] {
+  display: none !important;
+}
+
+.save-overlay-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 22px;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.14);
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.save-overlay-spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2.5px solid rgba(79, 70, 229, 0.18);
+  border-top-color: #4f46e5;
+  animation: save-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes save-spin {
+  to { transform: rotate(360deg); }
+}
