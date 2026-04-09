@@ -447,7 +447,7 @@ async function ensureContentScriptInjected(tabId) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ['src/content.js']
+      files: ['src/config.js', 'src/content.js']
     });
   } catch {
     // Ignore tabs that cannot be scripted. Existing content-script contexts still work.
