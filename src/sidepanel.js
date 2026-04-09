@@ -16,6 +16,7 @@ const stepTemplate = document.getElementById('stepTemplate');
 const documentTemplate = document.getElementById('documentTemplate');
 const restartCaptureButton = document.getElementById('restartCapture');
 const saveButton = document.getElementById('saveSession');
+const saveOverlay = document.getElementById('saveOverlay');
 const clearButton = document.getElementById('clearSession');
 const saveStatus = document.getElementById('saveStatus');
 const authLoggedOut = document.getElementById('authLoggedOut');
@@ -279,7 +280,7 @@ saveButton.addEventListener('click', async () => {
   }
 
   saveButton.disabled = true;
-  showStatus('Saving session...', null);
+  saveOverlay.hidden = false;
 
   try {
     const savedDocument = await saveSession(session);
@@ -300,6 +301,7 @@ saveButton.addEventListener('click', async () => {
 
     showStatus(`Unable to save: ${error.message}`, 'error');
   } finally {
+    saveOverlay.hidden = true;
     updateControlState();
   }
 });
@@ -459,7 +461,7 @@ async function setCaptureStartingOverlay(tabId, visible) {
       try {
         await chrome.scripting.executeScript({
           target: { tabId },
-          files: ['src/content.js']
+          files: ['src/config.js', 'src/content.js']
         });
         // Give the freshly-injected script a tick to finish installing its listeners
         // before we fire the message at it.
