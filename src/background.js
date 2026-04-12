@@ -9,8 +9,7 @@ let captureSessionActive = false;
 let activeCaptureTabId = null;
 const AUTH_TOKEN_KEY = 'authToken';
 const AUTH_USER_KEY = 'authUser';
-const CAPTURE_ACROSS_TABS_KEY = 'captureAcrossTabs';
-const LOG_PREFIX = '[GetDocumented:background]';
+const LOG_PREFIX = '[Tracely:background]';
 const { WEB_APP_URL_PATTERNS } = GD_CONFIG;
 
 
@@ -31,7 +30,6 @@ const ACTIONS = {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
-  void ensureCaptureAcrossTabsDefault();
 });
 
 chrome.action.onClicked.addListener(async (tab) => {
@@ -60,7 +58,7 @@ chrome.runtime.onConnect.addListener((port) => {
       }
 
       panelPorts.set(tabId, port);
-      if (captureSessionActive && activeCaptureTabId === tabId) {
+      if (captureSessionActive) {
         await setCaptureEnabled(tabId, true);
       }
 
@@ -115,13 +113,16 @@ chrome.runtime.onConnect.addListener((port) => {
         }
         return;
       }
-      if (typeof message.captureAcrossTabs === 'boolean') {
-        await chrome.storage.local.set({ [CAPTURE_ACROSS_TABS_KEY]: message.captureAcrossTabs });
-      }
       captureSessionActive = true;
       activeCaptureTabId = message.tabId;
       await clearSession();
-      await setCaptureEnabled(message.tabId, true);
+      const allTabs = await chrome.tabs.query({});
+      await Promise.all(
+        allTabs
+          .filter((tab) => typeof tab.id === 'number' && !getCaptureCompatibilityError(tab))
+          .map((tab) => setCaptureEnabled(tab.id, true))
+      );
+      await appendNavigationStep(message.tabId, { isStart: true });
       void sendSessionUpdate(message.tabId);
       return;
     }
@@ -170,7 +171,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  if (!captureSessionActive || !captureEnabledTabs.has(sender.tab.id) || sender.tab.id !== activeCaptureTabId) {
+  if (!captureSessionActive || !captureEnabledTabs.has(sender.tab.id)) {
     console.debug(LOG_PREFIX, 'ignoring capture for inactive tab', { tabId: sender.tab.id });
     sendResponse({ ok: true, ignored: true });
     return false;
@@ -197,25 +198,34 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
+// Record a "Go to {tab}" step when the user switches tabs during capture.
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  if (!captureSessionActive || typeof tabId !== 'number' || tabId === activeCaptureTabId) {
-    return;
-  }
-
-  if (!(await isCaptureAcrossTabsEnabled())) {
-    return;
-  }
-
-  const previousTabId = activeCaptureTabId;
-  activeCaptureTabId = tabId;
-
-  if (typeof previousTabId === 'number') {
-    await setCaptureEnabled(previousTabId, false);
-  }
-
+  if (!captureSessionActive) return;
+  // Ensure the content script is running in the newly active tab so that
+  // clicks on it are captured immediately — before the navigation step screenshot.
   await setCaptureEnabled(tabId, true);
+  // Wait for the tab to finish painting before taking the screenshot.
+  await delay(300);
+  if (!captureSessionActive) return;
+  console.debug(LOG_PREFIX, 'tab activated during capture, recording navigation step', { tabId });
   await appendNavigationStep(tabId);
 });
+
+// Enable capture on any new tab when a session is active.
+chrome.tabs.onCreated.addListener((tab) => {
+  if (!captureSessionActive || typeof tab.id !== 'number') return;
+  console.debug(LOG_PREFIX, 'capture enabling new tab', { tabId: tab.id });
+  // Tab is not loaded yet — onUpdated (status: 'complete') will inject and enable.
+});
+
+// When any tab navigates or a new tab finishes loading, enable capture on it.
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+  if (!captureSessionActive) return;
+  if (changeInfo.status !== 'complete') return;
+
+  await setCaptureEnabled(tabId, true);
+});
+
 
 async function handleInteractionCapture(tab, payload) {
   const tabId = tab.id;
@@ -251,9 +261,21 @@ async function handleInteractionCapture(tab, payload) {
   let screenshot;
 
   try {
-    screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {
-      format: 'png'
-    });
+    // Verify the window's current visible tab is accessible before capturing.
+    // If the active tab in the window has URL "" (still loading after a tab switch),
+    // wait for it to settle and retry once.
+    const [activeTab] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
+    if (!activeTab?.url) {
+      await delay(400);
+    }
+
+    try {
+      screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    } catch {
+      // Window may have changed active tabs mid-capture — retry after a short pause.
+      await delay(300);
+      screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    }
   } finally {
     await clearCaptureHighlight(tabId);
   }
@@ -363,14 +385,43 @@ async function disableAllCaptureTabs() {
   await Promise.all(enabledTabIds.map((tabId) => setCaptureEnabled(tabId, false)));
 }
 
-async function appendNavigationStep(tabId) {
+async function appendNavigationStep(tabId, { isStart = false } = {}) {
   try {
     const tab = await chrome.tabs.get(tabId);
-    if (!tab?.windowId || getCaptureCompatibilityError(tab)) {
+    if (!tab?.windowId) {
+      console.debug(LOG_PREFIX, 'appendNavigationStep: tab has no windowId', { tabId });
       return;
     }
 
-    const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    const compatError = getCaptureCompatibilityError(tab);
+    if (compatError) {
+      console.debug(LOG_PREFIX, 'appendNavigationStep: tab not capturable', { tabId, compatError });
+      return;
+    }
+
+    // Ensure the window is focused — captureVisibleTab only works on focused windows.
+    try {
+      await chrome.windows.update(tab.windowId, { focused: true });
+      await delay(80);
+    } catch {
+      // Window may have been closed or already focused — proceed.
+    }
+
+    let screenshot;
+    try {
+      screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    } catch (captureErr) {
+      // Tab may not have painted yet — retry once after a short delay.
+      console.debug(LOG_PREFIX, 'appendNavigationStep: captureVisibleTab failed, retrying', { tabId, err: captureErr?.message });
+      await delay(400);
+      try {
+        screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+      } catch (retryErr) {
+        console.warn(LOG_PREFIX, 'appendNavigationStep: captureVisibleTab retry failed, skipping step', { tabId, err: retryErr?.message });
+        return;
+      }
+    }
+
     const session = await getSession();
     const stepNumber = session.length + 1;
     const title = buildNavigationTitle(tab);
@@ -378,12 +429,12 @@ async function appendNavigationStep(tabId) {
     const entry = {
       id: crypto.randomUUID(),
       stepNumber,
-      title: `Navigate to ${title}`,
-      description: `Switch to the ${title} tab.`,
+      title: isStart ? `Navigate to ${title}` : `Go to ${title}`,
+      description: isStart ? `Capture started on ${title}.` : `Switch to ${title}.`,
       detail: tab.url || title,
-      actionType: 'navigate-tab',
+      actionType: isStart ? 'navigate-start' : 'navigate-tab',
       selector: null,
-      direction: 'tab-switch',
+      direction: isStart ? 'start' : 'tab-switch',
       clickPosition: null,
       viewport: null,
       pageUrl: tab.url || null,
@@ -394,9 +445,16 @@ async function appendNavigationStep(tabId) {
     session.push(entry);
     sessionsByTab.set(ACTIVE_SESSION_KEY, session);
     await chrome.storage.local.set({ [storageKey()]: session });
+    console.debug(LOG_PREFIX, 'appendNavigationStep: step recorded', { tabId, stepNumber, title: entry.title });
+    broadcastSessionUpdate();
+  } catch (err) {
+    console.warn(LOG_PREFIX, 'appendNavigationStep: unexpected error', { tabId, err: err?.message });
+  }
+}
+
+function broadcastSessionUpdate() {
+  for (const [tabId] of panelPorts) {
     void sendSessionUpdate(tabId);
-  } catch {
-    // Ignore tab navigation capture errors.
   }
 }
 
@@ -475,17 +533,6 @@ async function requestAuthSyncForAllTabs() {
   );
 }
 
-async function isCaptureAcrossTabsEnabled() {
-  const stored = await chrome.storage.local.get(CAPTURE_ACROSS_TABS_KEY);
-  return Boolean(stored[CAPTURE_ACROSS_TABS_KEY]);
-}
-
-async function ensureCaptureAcrossTabsDefault() {
-  const stored = await chrome.storage.local.get(CAPTURE_ACROSS_TABS_KEY);
-  if (typeof stored[CAPTURE_ACROSS_TABS_KEY] === 'undefined') {
-    await chrome.storage.local.set({ [CAPTURE_ACROSS_TABS_KEY]: false });
-  }
-}
 
 async function syncAuthSession(payload) {
   await chrome.storage.local.set({

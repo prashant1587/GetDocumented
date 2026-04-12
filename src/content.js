@@ -11,7 +11,7 @@ if (!window.__getdocumentedContentInstalled) {
   const PAGE_BRIDGE_EVENT = 'GETDOCUMENTED_PAGE_BRIDGE_EVENT';
   const AUTH_SESSION_SYNC = 'AUTH_SESSION_SYNC';
   const AUTH_SESSION_CLEAR = 'AUTH_SESSION_CLEAR';
-  const LOG_PREFIX = '[GetDocumented:content]';
+  const LOG_PREFIX = '[Tracely:content]';
   const WEB_APP_ORIGINS = GD_CONFIG.WEB_APP_ORIGINS;
   let lastClickAt = 0;
   let lastChangeAt = 0;

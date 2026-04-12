@@ -3,40 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GetDocumented</title>
+    <title>Tracely</title>
     <link rel="stylesheet" href="./sidepanel.css" />
   </head>
   <body>
     <section id="authLoggedOut" class="logged-out-screen">
+      <img src="../icons/icon128.png" alt="Tracely" class="login-logo" />
+      <h1 class="login-brand-name">Tracely</h1>
       <button id="openLoginButton" type="button" class="login-centered-button">Login</button>
       <p id="authStatus" class="status auth-status-centered" aria-live="polite"></p>
     </section>
 
     <main id="appShell" class="app-shell" hidden>
       <header class="topbar">
-        <div class="brand-mark">GD</div>
+        <div class="brand-mark"><img src="../icons/icon128.png" alt="Tracely" class="login-logo" /></div>
         <div class="topbar-actions">
-          <div class="settings-wrap">
-            <button id="settingsButton" type="button" class="icon-button settings-button" aria-label="Open settings" aria-expanded="false">
-              <svg viewBox="0 0 512 512" aria-hidden="true">
-                <path d="M487.4 315.7l-42.2-24.4c2.7-14.1 4.1-28.7 4.1-43.3s-1.4-29.2-4.1-43.3l42.2-24.4c15.1-8.7 21.1-27.3 14.2-43.8l-43.4-104c-6.9-16.5-24.4-25.1-41.6-20.5l-48.3 12.9c-22.5-18.2-47.7-32.8-74.9-43.1L286.6 7.4C283.8-10 269.1 0 256 0s-27.8-10-30.6 7.4l-7.8 49.4c-27.2 10.3-52.4 24.9-74.9 43.1l-48.3-12.9c-17.2-4.6-34.7 4-41.6 20.5l-43.4 104c-6.9 16.5-.9 35.1 14.2 43.8l42.2 24.4C64.4 218.8 63 233.4 63 248s1.4 29.2 4.1 43.3l-42.2 24.4c-15.1 8.7-21.1 27.3-14.2 43.8l43.4 104c6.9 16.5 24.4 25.1 41.6 20.5l48.3-12.9c22.5 18.2 47.7 32.8 74.9 43.1l7.8 49.4c2.8 17.4 17.5 7.4 30.6 7.4s27.8 10 30.6-7.4l7.8-49.4c27.2-10.3 52.4-24.9 74.9-43.1l48.3 12.9c17.2 4.6 34.7-4 41.6-20.5l43.4-104c6.9-16.5.9-35.1-14.2-43.8zM256 336c-48.5 0-88-39.5-88-88s39.5-88 88-88 88 39.5 88 88-39.5 88-88 88z"/>
-              </svg>
-            </button>
-            <section id="settingsPanel" class="settings-panel" hidden>
-              <label class="settings-option" for="captureAcrossTabsToggle">
-                <span class="settings-copy">
-                  <strong>Capture Across Tabs</strong>
-                  <small>Keep one capture session running when you switch tabs.</small>
-                </span>
-                <input id="captureAcrossTabsToggle" type="checkbox" />
-              </label>
-            </section>
-          </div>
           <div class="user-chip">
             <span class="user-chip-badge" id="authUserInitials">U</span>
-            <strong id="authUserEmail"></strong>
+            <strong id="authUserName"></strong>
           </div>
-          <button id="logoutButton" type="button" class="icon-button" aria-label="Log out">Log out</button>
         </div>
       </header>
 
