@@ -1,11 +1,11 @@
-const PAGE_BRIDGE_SOURCE = 'getdocumented-page-bridge';
-const PAGE_BRIDGE_REQUEST = 'GETDOCUMENTED_PAGE_BRIDGE_REQUEST';
-const PAGE_BRIDGE_EVENT = 'GETDOCUMENTED_PAGE_BRIDGE_EVENT';
-const AUTH_TOKEN_KEY = 'getdocumented.auth.token';
-const AUTH_USER_KEY = 'getdocumented.auth.user';
-
 if (!window.__getdocumentedPageBridgeInstalled) {
   window.__getdocumentedPageBridgeInstalled = true;
+
+  const PAGE_BRIDGE_SOURCE = 'getdocumented-page-bridge';
+  const PAGE_BRIDGE_REQUEST = 'GETDOCUMENTED_PAGE_BRIDGE_REQUEST';
+  const PAGE_BRIDGE_EVENT = 'GETDOCUMENTED_PAGE_BRIDGE_EVENT';
+  const AUTH_TOKEN_KEY = 'getdocumented.auth.token';
+  const AUTH_USER_KEY = 'getdocumented.auth.user';
 
   const readUser = () => {
     const rawUser = window.localStorage.getItem(AUTH_USER_KEY);

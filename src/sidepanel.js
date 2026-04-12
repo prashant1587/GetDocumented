@@ -8,8 +8,7 @@ const PRESIGNED_UPLOAD_ENDPOINT = '/api/documents/uploads/presigned-url';
 const AUTH_TOKEN_KEY = 'authToken';
 const AUTH_USER_KEY = 'authUser';
 const ACTIVE_SESSION_KEY = 'session:active';
-const CAPTURE_ACROSS_TABS_KEY = 'captureAcrossTabs';
-const LOG_PREFIX = '[GetDocumented:sidepanel]';
+const LOG_PREFIX = '[Tracely:sidepanel]';
 
 const stepsContainer = document.getElementById('steps');
 const stepTemplate = document.getElementById('stepTemplate');
@@ -24,14 +23,10 @@ const appShell = document.getElementById('appShell');
 const launcherView = document.getElementById('launcherView');
 const captureView = document.getElementById('captureView');
 const documentsList = document.getElementById('documentsList');
-const authUserEmail = document.getElementById('authUserEmail');
+const authUserName = document.getElementById('authUserName');
 const authUserInitials = document.getElementById('authUserInitials');
 const authStatus = document.getElementById('authStatus');
 const openLoginButton = document.getElementById('openLoginButton');
-const logoutButton = document.getElementById('logoutButton');
-const settingsButton = document.getElementById('settingsButton');
-const settingsPanel = document.getElementById('settingsPanel');
-const captureAcrossTabsToggle = document.getElementById('captureAcrossTabsToggle');
 const documentSearchInput = document.getElementById('documentSearch');
 const START_CAPTURE_ATTACH_DELAY_MS = 3000;
 
@@ -44,10 +39,12 @@ let availableDocuments = [];
 let port = null;
 let portConnected = false;
 let documentSearchTerm = '';
+let documentsLoading = false;
+let documentsSearchTotal = null;
+let searchDebounceTimer = null;
 let authSyncIntervalId = null;
 let pendingAuthReturn = null;
 let isCaptureMode = false;
-let captureAcrossTabs = false;
 
 init();
 
@@ -82,11 +79,6 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     console.debug(LOG_PREFIX, 'session storage updated', { tabId: currentTabId, count: session.length });
     renderSession();
     updateControlState();
-  }
-
-  if (changes[CAPTURE_ACROSS_TABS_KEY]) {
-    captureAcrossTabs = Boolean(changes[CAPTURE_ACROSS_TABS_KEY].newValue);
-    captureAcrossTabsToggle.checked = captureAcrossTabs;
   }
 
   if (!changes[AUTH_TOKEN_KEY] && !changes[AUTH_USER_KEY]) {
@@ -130,7 +122,6 @@ async function init() {
     return;
   }
 
-  await restoreCaptureSettings();
   await restoreAuthSession();
   connectPort();
   updateAuthPolling();
@@ -177,35 +168,6 @@ openLoginButton.addEventListener('click', async () => {
   }
 });
 
-logoutButton.addEventListener('click', async () => {
-  await clearAuthSession();
-  showAuthStatus('Logged out. Capture is disabled until you sign in again.', 'success');
-});
-
-settingsButton.addEventListener('click', () => {
-  const nextHidden = !settingsPanel.hidden;
-  settingsPanel.hidden = nextHidden;
-  settingsButton.setAttribute('aria-expanded', String(!nextHidden));
-});
-
-captureAcrossTabsToggle.addEventListener('change', async (event) => {
-  captureAcrossTabs = Boolean(event.target.checked);
-  await chrome.storage.local.set({ [CAPTURE_ACROSS_TABS_KEY]: captureAcrossTabs });
-});
-
-document.addEventListener('click', (event) => {
-  if (settingsPanel.hidden) {
-    return;
-  }
-
-  if (settingsPanel.contains(event.target) || settingsButton.contains(event.target)) {
-    return;
-  }
-
-  settingsPanel.hidden = true;
-  settingsButton.setAttribute('aria-expanded', 'false');
-});
-
 clearButton.addEventListener('click', async () => {
   await stopCaptureSession();
   await resetCaptureSession();
@@ -213,8 +175,23 @@ clearButton.addEventListener('click', async () => {
 });
 
 documentSearchInput.addEventListener('input', (event) => {
-  documentSearchTerm = event.target.value.trim().toLowerCase();
+  const term = event.target.value.trim();
+  documentSearchTerm = term.toLowerCase();
+
+  clearTimeout(searchDebounceTimer);
+
+  if (!term) {
+    documentsSearchTotal = null;
+    void loadAccessibleDocuments();
+    return;
+  }
+
+  documentsLoading = true;
   renderDocuments();
+
+  searchDebounceTimer = setTimeout(() => {
+    void searchDocuments(term);
+  }, 300);
 });
 
 restartCaptureButton.addEventListener('click', async () => {
@@ -258,7 +235,7 @@ restartCaptureButton.addEventListener('click', async () => {
       return;
     }
 
-    postPortMessage({ type: 'START_CAPTURE_SESSION', tabId: currentTabId, captureAcrossTabs });
+    postPortMessage({ type: 'START_CAPTURE_SESSION', tabId: currentTabId });
     showStatus('Capture restarted. Your next click will become step 1.', 'success');
   } catch (error) {
     setCaptureMode(false);
@@ -501,11 +478,6 @@ async function restoreAuthSession() {
   }
 }
 
-async function restoreCaptureSettings() {
-  const stored = await chrome.storage.local.get(CAPTURE_ACROSS_TABS_KEY);
-  captureAcrossTabs = Boolean(stored[CAPTURE_ACROSS_TABS_KEY]);
-  captureAcrossTabsToggle.checked = captureAcrossTabs;
-}
 
 async function persistAuthSession() {
   await chrome.storage.local.set({
@@ -520,6 +492,8 @@ async function clearAuthSession() {
   authUser = null;
   availableDepartments = [];
   availableDocuments = [];
+  documentsLoading = false;
+  documentsSearchTotal = null;
   pendingAuthReturn = null;
   await chrome.storage.local.remove([AUTH_TOKEN_KEY, AUTH_USER_KEY]);
   updateAuthUi();
@@ -536,7 +510,7 @@ function updateAuthUi() {
     launcherView.hidden = isCaptureMode;
     captureView.hidden = !isCaptureMode;
   }
-  authUserEmail.textContent = authenticated ? authUser?.email || 'Unknown user' : '';
+  authUserName.textContent = authenticated ? authUser?.name || 'Unknown user' : '';
   authUserInitials.textContent = authenticated ? buildUserInitials(authUser) : 'U';
   updateAuthPolling();
   updateDepartmentUi();
@@ -559,6 +533,10 @@ function isAuthenticated() {
 function buildUserInitials(user) {
   const source = user?.name?.trim() || user?.email?.trim() || 'User';
   return source.charAt(0).toUpperCase();
+}
+
+function buildUserName(user) {
+  return user?.name?.trim() || user?.email?.trim() || 'User';
 }
 
 function getCaptureCompatibilityError(tab) {
@@ -740,17 +718,47 @@ async function loadDepartments() {
 async function loadAccessibleDocuments() {
   if (!isAuthenticated()) {
     availableDocuments = [];
+    documentsSearchTotal = null;
     renderDocuments();
     return;
   }
 
+  documentsLoading = true;
+  renderDocuments();
+
   try {
     const responseData = await apiFetchJson(SAVE_ENDPOINT);
     availableDocuments = Array.isArray(responseData) ? responseData : [];
+    documentsSearchTotal = null;
   } catch {
     availableDocuments = [];
+    documentsSearchTotal = null;
   }
 
+  documentsLoading = false;
+  renderDocuments();
+}
+
+async function searchDocuments(term) {
+  if (!isAuthenticated()) {
+    return;
+  }
+
+  try {
+    const responseData = await apiFetchJson(`${SAVE_ENDPOINT}?search=${encodeURIComponent(term)}`);
+    if (typeof responseData?.total === 'number') {
+      availableDocuments = Array.isArray(responseData.documents) ? responseData.documents : [];
+      documentsSearchTotal = responseData.total;
+    } else {
+      availableDocuments = Array.isArray(responseData) ? responseData : [];
+      documentsSearchTotal = null;
+    }
+  } catch {
+    availableDocuments = [];
+    documentsSearchTotal = null;
+  }
+
+  documentsLoading = false;
   renderDocuments();
 }
 
@@ -875,17 +883,37 @@ function renderDocuments() {
     return;
   }
 
-  const filteredDocuments = availableDocuments.filter(matchesDocumentSearch);
+  if (documentsLoading) {
+    documentsList.innerHTML = '<div class="documents-loader"><span class="documents-loader-spinner"></span></div>';
+    return;
+  }
 
-  if (!filteredDocuments.length) {
-    documentsList.innerHTML = availableDocuments.length
+  if (!availableDocuments.length) {
+    documentsList.innerHTML = documentSearchTerm
       ? '<div class="empty">No documents match your search.</div>'
       : '<div class="empty">No published documents are available yet.</div>';
     return;
   }
 
-  for (const document of filteredDocuments) {
-    documentsList.appendChild(createDocumentElement(document));
+  const PAGE_SIZE = 10;
+  const visibleDocuments = availableDocuments.slice(0, PAGE_SIZE);
+
+  for (const doc of visibleDocuments) {
+    documentsList.appendChild(createDocumentElement(doc));
+  }
+
+  const total = documentsSearchTotal !== null ? documentsSearchTotal : availableDocuments.length;
+  if (total > PAGE_SIZE) {
+    const viewAll = document.createElement('a');
+    viewAll.className = 'documents-view-all';
+    viewAll.textContent = `View all ${total} documents`;
+    viewAll.href = '#';
+    viewAll.addEventListener('click', async (event) => {
+      event.preventDefault();
+      const webAppBaseUrl = await resolveWebAppBaseUrl();
+      await chrome.tabs.create({ url: `${webAppBaseUrl}/documents` });
+    });
+    documentsList.appendChild(viewAll);
   }
 }
 

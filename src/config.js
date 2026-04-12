@@ -1,4 +1,4 @@
-// Environment config for GetDocumented extension.
+// Environment config for Tracely extension.
 //
 // Environment is detected automatically:
 //   - Development : unpacked extension (no `update_url` in manifest)
@@ -25,18 +25,15 @@
     };
   
     const PRODUCTION = {
-      API_BASE_URL: 'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com',
+      API_BASE_URL: 'https://app.tracely.uk',
       WEB_APP_CANDIDATE_BASE_URLS: [
-        'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com',
-        'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com',
+        'https://app.tracely.uk',
       ],
       WEB_APP_URL_PATTERNS: [
-        'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com/*',
-        'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com/*',
+        'https://app.tracely.uk/*',
       ],
       WEB_APP_ORIGINS: new Set([
-        'https://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com',
-        'http://ec2-13-51-255-102.eu-north-1.compute.amazonaws.com',
+        'https://app.tracely.uk',
       ]),
     };
   
