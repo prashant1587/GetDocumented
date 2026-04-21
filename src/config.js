@@ -9,16 +9,19 @@
     const IS_PRODUCTION = !!chrome.runtime.getManifest().update_url;
   
     const DEVELOPMENT = {
-      API_BASE_URL: 'http://localhost:3000',
+      API_BASE_URL: 'https://app.tracely.uk',
       WEB_APP_CANDIDATE_BASE_URLS: [
+        'https://app.tracely.uk',
         'http://localhost:8080',
         'http://127.0.0.1:8080',
       ],
       WEB_APP_URL_PATTERNS: [
+        'https://app.tracely.uk/*',
         'http://localhost:8080/*',
         'http://127.0.0.1:8080/*',
       ],
       WEB_APP_ORIGINS: new Set([
+        'https://app.tracely.uk',
         'http://localhost:8080',
         'http://127.0.0.1:8080',
       ]),

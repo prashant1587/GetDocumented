@@ -106,6 +106,29 @@ body:not(.authenticated) .app-shell {
   gap: 10px;
 }
 
+.group-selector-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.group-selector {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 28px 7px 10px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24'%3E%3Cpath fill='%236b7280' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E") no-repeat right 10px center;
+  appearance: none;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #374151;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 
 .user-chip {
   display: inline-flex;

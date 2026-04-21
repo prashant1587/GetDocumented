@@ -28,6 +28,8 @@ const authUserInitials = document.getElementById('authUserInitials');
 const authStatus = document.getElementById('authStatus');
 const openLoginButton = document.getElementById('openLoginButton');
 const documentSearchInput = document.getElementById('documentSearch');
+const groupSelectorWrap = document.getElementById('groupSelectorWrap');
+const groupSelector = document.getElementById('groupSelector');
 const START_CAPTURE_ATTACH_DELAY_MS = 3000;
 
 let currentTabId;
@@ -473,8 +475,14 @@ async function restoreAuthSession() {
     await Promise.all([loadDepartments(), loadAccessibleDocuments()]);
     showAuthStatus(`Signed in as ${authUser.email}.`, 'success');
   } catch (error) {
-    await clearAuthSession();
-    showAuthStatus(`Log in to enable capture. ${error.message}`, 'error');
+    if (error.status === 401 || error.status === 403) {
+      await clearAuthSession();
+      showAuthStatus('Session expired. Please log in again.', 'error');
+    } else {
+      updateAuthUi();
+      showAuthStatus(`Unable to reach server: ${error.message}`, 'error');
+    }
+    console.error(LOG_PREFIX, 'restoreAuthSession failed', error);
   }
 }
 
@@ -845,7 +853,27 @@ function withAuthHeaders(init) {
   };
 }
 
-function updateDepartmentUi() {}
+function updateDepartmentUi() {
+  if (!isAuthenticated() || availableDepartments.length === 0) {
+    groupSelectorWrap.hidden = true;
+    return;
+  }
+
+  const currentValue = groupSelector.value;
+  groupSelector.innerHTML = '<option value="">All groups</option>';
+  for (const dept of availableDepartments) {
+    const option = document.createElement('option');
+    option.value = dept.id;
+    option.textContent = dept.name;
+    groupSelector.appendChild(option);
+  }
+
+  if (currentValue && availableDepartments.some((d) => d.id === currentValue)) {
+    groupSelector.value = currentValue;
+  }
+
+  groupSelectorWrap.hidden = false;
+}
 
 function setCaptureMode(active) {
   isCaptureMode = Boolean(active && isAuthenticated());
@@ -963,7 +991,7 @@ function formatDocumentDate(value) {
 }
 
 function getSelectedDepartmentId() {
-  return authUser?.departmentId || null;
+  return groupSelector?.value || null;
 }
 
 function buildDocumentTitle(steps) {
