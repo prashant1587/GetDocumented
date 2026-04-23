@@ -776,7 +776,7 @@ function buildDocumentPayload(steps) {
     sourceUrl: getDocumentSourceUrl(steps),
     items: steps.map((step, index) => ({
       title: step.title,
-      description: step.direction,
+      description: step.description,
       screenshot: step.screenshot,
       mimeType: parseMimeType(step.screenshot),
       fileName: buildFileName(step, index),
@@ -804,7 +804,7 @@ async function uploadStepScreenshot(step, index) {
 
   return {
     title: step.title,
-    description: step.direction,
+    description: step.description,
     screenshotUrl: uploadDescriptor.fileUrl,
     mimeType,
     fileName,

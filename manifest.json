@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Tracely – Create Step-by-Step Guides Instantly",
-  "description": "Tracely – Create Step-by-Step Guides Instantly",
-  "version": "0.1.0",
+  "description": "Automatically capture clicks and turn any workflow into a clean, shareable guide.",
+  "version": "0.2.0",
   "permissions": [
     "tabs",
     "activeTab",
