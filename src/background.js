@@ -7,6 +7,7 @@ const captureEnabledTabs = new Set();
 const pendingSessionFlush = new Set();
 let captureSessionActive = false;
 let activeCaptureTabId = null;
+let suppressActivationCount = 0;
 const AUTH_TOKEN_KEY = 'authToken';
 const AUTH_USER_KEY = 'authUser';
 const LOG_PREFIX = '[Tracely:background]';
@@ -255,20 +256,17 @@ async function handleInteractionCapture(tab, payload) {
     return;
   }
 
+  // If this click triggered a navigation the tab may already be loading the next
+  // page. Wait for it to settle before showing the highlight and capturing so we
+  // never screenshot a blank / half-painted page.
+  await waitForTabLoad(tabId);
+
   await showCaptureHighlight(tabId, payload.highlightRect);
   console.debug(LOG_PREFIX, 'capturing screenshot', { tabId, actionType: payload.actionType, title: payload.title });
 
   let screenshot;
 
   try {
-    // Verify the window's current visible tab is accessible before capturing.
-    // If the active tab in the window has URL "" (still loading after a tab switch),
-    // wait for it to settle and retry once.
-    const [activeTab] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
-    if (!activeTab?.url) {
-      await delay(400);
-    }
-
     try {
       screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
     } catch {
@@ -613,15 +611,38 @@ async function showCaptureHighlight(tabId, highlightRect) {
 
         document.documentElement.appendChild(overlay);
 
+        // Two rAF calls ensure the element is painted before signalling ready.
         requestAnimationFrame(() => {
           overlay.style.transform = 'scale(1)';
+          requestAnimationFrame(() => {
+            window.__getdocumentedHighlightReady = true;
+          });
         });
       }
     });
 
-    await delay(80);
+    // Poll until the content script confirms the highlight has painted,
+    // then add a small buffer to let the composite frame settle.
+    await waitForHighlight(tabId);
+    await delay(32);
   } catch {
     // Ignore highlight injection errors and continue with capture.
+  }
+}
+
+async function waitForHighlight(tabId, timeoutMs = 500) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => window.__getdocumentedHighlightReady === true
+      });
+      if (result) return;
+    } catch {
+      return;
+    }
+    await delay(16);
   }
 }
 
@@ -631,6 +652,7 @@ async function clearCaptureHighlight(tabId) {
       target: { tabId },
       func: () => {
         document.getElementById('__getdocumented-highlight')?.remove();
+        window.__getdocumentedHighlightReady = false;
       }
     });
   } catch {
@@ -640,6 +662,31 @@ async function clearCaptureHighlight(tabId) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForTabLoad(tabId, timeoutMs = 4000) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.status === 'complete') return;
+  } catch {
+    return;
+  }
+
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+
+    function onUpdated(updatedTabId, changeInfo) {
+      if (updatedTabId !== tabId || changeInfo.status !== 'complete') return;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearTimeout(timer);
+      resolve();
+    }
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+  });
+
+  // Let the page paint at least one frame after load completes.
+  await delay(100);
 }
 
 function getCaptureCompatibilityError(tab) {

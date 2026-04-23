@@ -123,7 +123,14 @@ function buildActionTitle(actionType, element) {
 
 function buildActionDescription(actionType, element) {
   const label = getElementLabel(element);
-  return actionType === 'click' ? (label ? `Click on ${label}` : 'Click on highlighted item') : label || 'Interaction recorded';
+  const section = getPageSection(element);
+
+  if (actionType === 'click') {
+    if (label && section) return `Click on "${label}" in the ${section} section`;
+    if (label) return `Click on "${label}"`;
+    return section ? `Click on highlighted item in the ${section} section` : 'Click on highlighted item';
+  }
+  return label || 'Interaction recorded';
 }
 
 function buildFormActionTitle(element) {
@@ -290,6 +297,10 @@ function getElementLabel(element) {
   const labelled = getAriaOrLabelText(element);
   if (labelled) return labelled;
 
+  // data-tooltip / data-tip attributes (common in modern UI libraries)
+  const tooltip = element.getAttribute('data-tooltip') || element.getAttribute('data-tip') || element.getAttribute('data-hint');
+  if (tooltip?.trim()) return tooltip.trim();
+
   const text = element.textContent?.trim();
   if (text) {
     return text.replace(/\s+/g, ' ').slice(0, 80);
@@ -307,7 +318,45 @@ function getElementLabel(element) {
   const value = element instanceof HTMLInputElement || element instanceof HTMLButtonElement ? element.value?.trim() : '';
   if (value) return value.slice(0, 80);
 
+  // For SVG/icon elements, check the wrapping parent for a label
+  const parent = element.parentElement;
+  if (parent) {
+    const parentAria = parent.getAttribute('aria-label');
+    if (parentAria?.trim()) return parentAria.trim();
+
+    const parentTitle = parent.getAttribute('title') || parent.getAttribute('data-tooltip') || parent.getAttribute('data-tip');
+    if (parentTitle?.trim()) return parentTitle.trim();
+
+    // Adjacent sibling text — handles icon + text label patterns
+    for (const sibling of parent.children) {
+      if (sibling === element) continue;
+      const sibText = sibling.textContent?.trim();
+      if (sibText && sibText.length <= 80) return sibText;
+    }
+  }
+
   return humanizeIdentifier(element.id || element.getAttribute('name') || element.tagName.toLowerCase());
+}
+
+function getPageSection(element) {
+  let current = element.parentElement;
+  while (current && current !== document.body) {
+    let sibling = current.previousElementSibling;
+    while (sibling) {
+      if (/^h[1-6]$/i.test(sibling.tagName)) {
+        const headingText = sibling.textContent?.trim();
+        if (headingText) return headingText.slice(0, 60);
+      }
+      const heading = sibling.querySelector('h1, h2, h3, h4, h5, h6');
+      if (heading) {
+        const headingText = heading.textContent?.trim();
+        if (headingText) return headingText.slice(0, 60);
+      }
+      sibling = sibling.previousElementSibling;
+    }
+    current = current.parentElement;
+  }
+  return '';
 }
 
 function getFieldLabel(element) {

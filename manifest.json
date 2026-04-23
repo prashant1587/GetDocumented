@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Tracely Click Capture",
-  "description": "Capture click-by-click screenshots and export a documented walkthrough to PDF.",
-  "version": "0.1.0",
+  "name": "Tracely – Create Step-by-Step Guides Instantly",
+  "description": "Automatically capture clicks and turn any workflow into a clean, shareable guide.",
+  "version": "0.2.0",
   "permissions": [
     "tabs",
     "activeTab",
