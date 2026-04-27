@@ -14,9 +14,33 @@ if (!window.__getdocumentedContentInstalled) {
   const LOG_PREFIX = '[Tracely:content]';
   const WEB_APP_ORIGINS = GD_CONFIG.WEB_APP_ORIGINS;
   let lastClickAt = 0;
+  let lastMouseDownAt = 0;
   let lastChangeAt = 0;
   let extensionContextAvailable = true;
   let lastSyncedToken = null;
+
+// Fires before menus close and before navigation starts — gives the background
+// the earliest possible moment to capture the page in its pre-action state.
+window.addEventListener(
+  'mousedown',
+  (event) => {
+    const now = Date.now();
+    if (now - lastMouseDownAt < CLICK_THROTTLE_MS) return;
+
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+
+    lastMouseDownAt = now;
+
+    void safeSendRuntimeMessage({
+      type: 'PRE_CAPTURE_SCREENSHOT',
+      payload: {
+        highlightRect: getHighlightRect(target, { x: event.clientX, y: event.clientY })
+      }
+    });
+  },
+  true
+);
 
 window.addEventListener(
   'click',
