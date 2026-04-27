@@ -479,3 +479,16 @@ button:disabled {
   border-top-color: #4f46e5;
   animation: save-spin 0.7s linear infinite;
 }
+
+.privacy-notice {
+  margin-top: 16px;
+  font-size: 11px;
+  color: #9ca3af;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.privacy-notice a {
+  color: #6b7280;
+  text-decoration: underline;
+}

@@ -8,6 +8,11 @@ const pendingSessionFlush = new Set();
 let captureSessionActive = false;
 let activeCaptureTabId = null;
 let suppressActivationCount = 0;
+// Serialises all captureVisibleTab calls so concurrent handlers don't race.
+let captureSerialPromise = Promise.resolve();
+// Screenshot taken on mousedown, before menus close or navigation starts.
+// Consumed by the subsequent INTERACTION_CAPTURED handler for the same click.
+let pendingScreenshot = null; // { screenshot, tabId, timestamp }
 const AUTH_TOKEN_KEY = 'authToken';
 const AUTH_USER_KEY = 'authUser';
 const LOG_PREFIX = '[Tracely:background]';
@@ -168,6 +173,68 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Mousedown fires before menus close / navigation starts — capture immediately
+  // and stash the screenshot so INTERACTION_CAPTURED can reuse it.
+  if (message?.type === 'PRE_CAPTURE_SCREENSHOT' && sender.tab?.id) {
+    const tabId = sender.tab.id;
+    if (!captureSessionActive || !captureEnabledTabs.has(tabId)) {
+      sendResponse({ ok: true, ignored: true });
+      return false;
+    }
+
+    const windowId = sender.tab.windowId;
+    const highlightRect = message.payload?.highlightRect;
+
+    const preCapture = captureSerialPromise.then(async () => {
+      // Use a static highlight (no CSS transition) so we only wait one paint frame
+      // instead of the 150ms animation settle used by showCaptureHighlight.
+      // Every millisecond counts here — navigation can start within ~60ms of mousedown.
+      if (highlightRect) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            args: [highlightRect],
+            func: (rect) => {
+              document.getElementById('__getdocumented-highlight')?.remove();
+              const el = document.createElement('div');
+              el.id = '__getdocumented-highlight';
+              el.style.cssText = [
+                'position:fixed',
+                `left:${Math.max(0, rect.left)}px`,
+                `top:${Math.max(0, rect.top)}px`,
+                `width:${Math.max(20, rect.width)}px`,
+                `height:${Math.max(20, rect.height)}px`,
+                `border-radius:${rect.radius || 12}px`,
+                'pointer-events:none',
+                'box-sizing:border-box',
+                'border:3px solid rgba(236,72,153,0.95)',
+                'background:rgba(244,114,182,0.18)',
+                'box-shadow:0 0 0 6px rgba(244,114,182,0.14),0 0 28px rgba(244,114,182,0.45)',
+                'z-index:2147483647',
+              ].join(';');
+              document.documentElement.appendChild(el);
+            }
+          });
+        } catch { /* ignore — highlight is cosmetic */ }
+      }
+      // One paint frame so the highlight is composited before we capture.
+      await delay(16);
+      try {
+        const shot = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+        pendingScreenshot = { screenshot: shot, tabId, timestamp: Date.now() };
+        console.debug(LOG_PREFIX, 'PRE_CAPTURE_SCREENSHOT stored', { tabId });
+      } catch {
+        pendingScreenshot = null;
+      } finally {
+        await clearCaptureHighlight(tabId);
+      }
+    }).catch(() => {});
+
+    captureSerialPromise = preCapture;
+    preCapture.then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
   if (message?.type !== ACTIONS.INTERACTION_CAPTURED || !sender.tab?.id) {
     return false;
   }
@@ -202,11 +269,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // Record a "Go to {tab}" step when the user switches tabs during capture.
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   if (!captureSessionActive) return;
-  // Ensure the content script is running in the newly active tab so that
-  // clicks on it are captured immediately — before the navigation step screenshot.
+  // Suppress activations caused by our own temporary tab switches during capture.
+  if (suppressActivationCount > 0) {
+    suppressActivationCount--;
+    return;
+  }
   await setCaptureEnabled(tabId, true);
-  // Wait for the tab to finish painting before taking the screenshot.
-  await delay(300);
   if (!captureSessionActive) return;
   console.debug(LOG_PREFIX, 'tab activated during capture, recording navigation step', { tabId });
   await appendNavigationStep(tabId);
@@ -241,7 +309,6 @@ async function handleInteractionCapture(tab, payload) {
 
   if (!stored[AUTH_TOKEN_KEY]) {
     console.warn(LOG_PREFIX, 'capture blocked, no auth token');
-    // Notify the panel so the user sees a clear message instead of silent failure
     const port = panelPorts.get(tabId);
     if (port) {
       try {
@@ -256,27 +323,69 @@ async function handleInteractionCapture(tab, payload) {
     return;
   }
 
-  // If this click triggered a navigation the tab may already be loading the next
-  // page. Wait for it to settle before showing the highlight and capturing so we
-  // never screenshot a blank / half-painted page.
-  await waitForTabLoad(tabId);
-
-  await showCaptureHighlight(tabId, payload.highlightRect);
-  console.debug(LOG_PREFIX, 'capturing screenshot', { tabId, actionType: payload.actionType, title: payload.title });
-
   let screenshot;
 
-  try {
+  const clickCapture = captureSerialPromise.then(async () => {
+    // Reuse the screenshot captured on mousedown (before menus closed / navigation started).
+    // Valid for up to 3 s — enough to cover any click latency.
+    const PRE_CAPTURE_TTL_MS = 3000;
+    if (
+      pendingScreenshot &&
+      pendingScreenshot.tabId === tabId &&
+      Date.now() - pendingScreenshot.timestamp < PRE_CAPTURE_TTL_MS
+    ) {
+      screenshot = pendingScreenshot.screenshot;
+      pendingScreenshot = null;
+      console.debug(LOG_PREFIX, 'using pre-captured screenshot', { tabId, actionType: payload.actionType });
+      return;
+    }
+
+    // Fallback: no pre-capture available — capture now. This handles cases like
+    // programmatically triggered clicks or rapid double-clicks that skip mousedown.
+    console.debug(LOG_PREFIX, 'capturing screenshot (fallback)', { tabId, actionType: payload.actionType, title: payload.title });
+
+    // Brief pause so Chrome has time to create and focus any new tab (target="_blank").
+    await delay(60);
+
+    const [activeTab] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
+    const newTabStoleFocus = activeTab && activeTab.id !== tabId;
+
+    if (newTabStoleFocus) {
+      suppressActivationCount++;
+      try {
+        await chrome.tabs.update(tabId, { active: true });
+        await delay(80);
+      } catch {
+        suppressActivationCount = Math.max(0, suppressActivationCount - 1);
+        return;
+      }
+    }
+
+    await showCaptureHighlight(tabId, payload.highlightRect);
+
     try {
       screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
     } catch {
-      // Window may have changed active tabs mid-capture — retry after a short pause.
       await delay(300);
-      screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+      try {
+        screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+      } catch { /* leave screenshot undefined */ }
+    } finally {
+      await clearCaptureHighlight(tabId);
     }
-  } finally {
-    await clearCaptureHighlight(tabId);
-  }
+
+    if (newTabStoleFocus) {
+      suppressActivationCount++;
+      try {
+        await chrome.tabs.update(activeTab.id, { active: true });
+      } catch {
+        suppressActivationCount = Math.max(0, suppressActivationCount - 1);
+      }
+    }
+  }).catch(() => {});
+
+  captureSerialPromise = clickCapture;
+  await clickCapture;
 
   const session = await getSession();
   const stepNumber = session.length + 1;
@@ -397,28 +506,37 @@ async function appendNavigationStep(tabId, { isStart = false } = {}) {
       return;
     }
 
-    // Ensure the window is focused — captureVisibleTab only works on focused windows.
-    try {
-      await chrome.windows.update(tab.windowId, { focused: true });
-      await delay(80);
-    } catch {
-      // Window may have been closed or already focused — proceed.
-    }
-
     let screenshot;
-    try {
-      screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-    } catch (captureErr) {
-      // Tab may not have painted yet — retry once after a short delay.
-      console.debug(LOG_PREFIX, 'appendNavigationStep: captureVisibleTab failed, retrying', { tabId, err: captureErr?.message });
-      await delay(400);
+
+    const navCapture = captureSerialPromise.then(async () => {
+      // Wait for the tab to finish loading before capturing.
+      await waitForTabLoad(tabId);
+
+      // Ensure the window is focused — captureVisibleTab only works on focused windows.
+      try {
+        await chrome.windows.update(tab.windowId, { focused: true });
+        await delay(80);
+      } catch {
+        // Window may have been closed or already focused — proceed.
+      }
+
       try {
         screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-      } catch (retryErr) {
-        console.warn(LOG_PREFIX, 'appendNavigationStep: captureVisibleTab retry failed, skipping step', { tabId, err: retryErr?.message });
-        return;
+      } catch (captureErr) {
+        console.debug(LOG_PREFIX, 'appendNavigationStep: captureVisibleTab failed, retrying', { tabId, err: captureErr?.message });
+        await delay(400);
+        try {
+          screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+        } catch (retryErr) {
+          console.warn(LOG_PREFIX, 'appendNavigationStep: captureVisibleTab retry failed, skipping step', { tabId, err: retryErr?.message });
+        }
       }
-    }
+    }).catch(() => {});
+
+    captureSerialPromise = navCapture;
+    await navCapture;
+
+    if (!screenshot) return;
 
     const session = await getSession();
     const stepNumber = session.length + 1;
@@ -611,38 +729,16 @@ async function showCaptureHighlight(tabId, highlightRect) {
 
         document.documentElement.appendChild(overlay);
 
-        // Two rAF calls ensure the element is painted before signalling ready.
         requestAnimationFrame(() => {
           overlay.style.transform = 'scale(1)';
-          requestAnimationFrame(() => {
-            window.__getdocumentedHighlightReady = true;
-          });
         });
       }
     });
 
-    // Poll until the content script confirms the highlight has painted,
-    // then add a small buffer to let the composite frame settle.
-    await waitForHighlight(tabId);
-    await delay(32);
+    // Wait for the CSS transition (120ms) plus one paint frame to settle.
+    await delay(150);
   } catch {
     // Ignore highlight injection errors and continue with capture.
-  }
-}
-
-async function waitForHighlight(tabId, timeoutMs = 500) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const [{ result }] = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: () => window.__getdocumentedHighlightReady === true
-      });
-      if (result) return;
-    } catch {
-      return;
-    }
-    await delay(16);
   }
 }
 
@@ -652,7 +748,6 @@ async function clearCaptureHighlight(tabId) {
       target: { tabId },
       func: () => {
         document.getElementById('__getdocumented-highlight')?.remove();
-        window.__getdocumentedHighlightReady = false;
       }
     });
   } catch {
