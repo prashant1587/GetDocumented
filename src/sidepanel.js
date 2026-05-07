@@ -793,7 +793,8 @@ async function uploadStepScreenshot(step, index) {
   const uploadResponse = await fetch(uploadDescriptor.uploadUrl, {
     method: 'PUT',
     headers: {
-      'Content-Type': mimeType
+      'Content-Type': mimeType,
+      'x-ms-blob-type': 'BlockBlob'
     },
     body: dataUrlToBlob(step.screenshot)
   });
@@ -860,7 +861,7 @@ function updateDepartmentUi() {
   }
 
   const currentValue = groupSelector.value;
-  groupSelector.innerHTML = '<option value="">All groups</option>';
+  groupSelector.innerHTML = '';
   for (const dept of availableDepartments) {
     const option = document.createElement('option');
     option.value = dept.id;

@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Tracely – Create Step-by-Step Guides Instantly",
   "description": "Automatically capture clicks and turn any workflow into a clean, shareable guide.",
-  "version": "1.1.0",
-  "version_name": "1.1.0 – Screenshot timing fixes for navigation links and dropdown menus",
+  "version": "1.1.1",
+  "version_name": "1.1.1 – Remove All groups from group selector; fix Azure screenshot upload",
   "homepage_url": "https://tracely.uk",
   "minimum_chrome_version": "114",
   "permissions": [
